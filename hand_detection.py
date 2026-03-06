@@ -98,13 +98,10 @@ with vision.HandLandmarker.create_from_options(options) as landmarker:
         annotated = draw_landmarks(rgb_frame.copy(), result)
         output = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
 
-        cv2.putText(output, f'Hands detected: {hand_count}', (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(output, 'Press ESC to quit', (10, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (250, 250, 250), 1)
-
+        cv2.putText(output, f'Score : {hand_count}', (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 3, (245, 245, 245), 4)
+        
         cv2.imshow('Hand Detection', output)
-
         if cv2.waitKey(5) & 0xFF == 27:
             break
 
