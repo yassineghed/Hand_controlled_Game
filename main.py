@@ -37,8 +37,11 @@ def main():
 
         cv2.imshow("Hand Game", frame)
 
-        if cv2.waitKey(1) & 0xFF == 27:
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:
             break
+        if key in (ord("r"), ord("R")) and game.game_over:
+            game.reset()
 
 
     cap.release()
