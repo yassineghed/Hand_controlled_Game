@@ -23,7 +23,6 @@ def main():
     game = GameEngine(width, height)
 
     while True:
-
         success, frame = cap.read()
         if not success:
             continue

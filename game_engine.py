@@ -16,7 +16,7 @@ class GameEngine:
 
 
     def spawn_ball(self):
-        ball = Ball(self.width)
+        ball = Ball(self.width, self.height)
         self.balls.append(ball)
 
 
@@ -38,7 +38,11 @@ class GameEngine:
 
     def check_collisions(self, hands):
 
+        remaining_balls = []
+
         for ball in self.balls:
+
+            hit = False
 
             for hand in hands:
 
@@ -48,8 +52,14 @@ class GameEngine:
                 dist = math.sqrt(dx*dx + dy*dy)
 
                 if dist < ball.radius + hand["radius"]:
-                    ball.vy = -abs(ball.vy)
                     self.score += 1
+                    hit = True
+                    break
+
+            if not hit:
+                remaining_balls.append(ball)
+
+        self.balls = remaining_balls
 
 
     def remove_offscreen_balls(self):
@@ -58,7 +68,12 @@ class GameEngine:
 
         for ball in self.balls:
 
-            if ball.y > self.height:
+            if (
+                ball.y > self.height + ball.radius or
+                ball.y < -ball.radius or
+                ball.x < -ball.radius or
+                ball.x > self.width + ball.radius
+            ):
                 self.score -= 1
             else:
                 remaining.append(ball)

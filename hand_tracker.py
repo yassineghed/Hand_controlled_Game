@@ -14,11 +14,10 @@ class HandTracker:
         options = vision.HandLandmarkerOptions(
             base_options=base_options,
             num_hands=2,
-            min_hand_detection_confidence=0.4,
-            min_hand_presence_confidence=0.4,
+            min_hand_detection_confidence=0.3,
+            min_hand_presence_confidence=0.3,
             min_tracking_confidence=0.2
         )
-
         self.landmarker = vision.HandLandmarker.create_from_options(options)
 
 
@@ -33,11 +32,14 @@ class HandTracker:
 
         result = self.landmarker.detect(mp_image)
 
+        if not result or not getattr(result, "hand_landmarks", None):
+            return []
+
         hands = []
 
         h, w, _ = frame.shape
 
-        for hand in result.hand_landmarks:
+        for i, hand in enumerate(result.hand_landmarks):
 
             cx = (
                 hand[0].x +
