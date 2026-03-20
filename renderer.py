@@ -1,4 +1,5 @@
 import cv2
+import time
 
 
 def draw_hands(frame, hands):
@@ -12,15 +13,45 @@ def draw_hands(frame, hands):
         cv2.circle(frame, (x, y), r, (0,255,0), 3)
 
 
-def draw_balls(frame, balls):
+def draw_balls(frame, balls, now=None):
+
+    """
+    Draw balls with a short spawn-in animation and a fading "safe" ring.
+    """
+    if now is None:
+        now = time.perf_counter()
+
+    spawn_anim_seconds = 0.01
+    min_scale = 0.6  # scale ball radius up right after spawn
 
     for ball in balls:
+        age = ball.age_seconds(now)
+
+        # Spawn animation: scale up quickly so it doesn't feel like balls "pop in".
+        if spawn_anim_seconds <= 0:
+            t = 1.0
+        else:
+            t = max(0.0, min(1.0, age / spawn_anim_seconds))
+        scale = min_scale + (1.0 - min_scale) * t
+        radius = max(1, int(ball.radius * scale))
+
+        cx, cy = int(ball.x), int(ball.y)
+
+        # Safe/fresh ring: lasts for the same duration as the fairness window.
+        safe_t = getattr(ball, "min_visible_seconds", 0.0) or 0.0
+        if safe_t > 0 and age < safe_t:
+            remaining = max(0.0, min(1.0, 1.0 - (age / safe_t)))
+            c = int(220 * remaining)  # BGR brightness
+            ring_color = (0, c, c)  # yellow-ish (BGR)
+            ring_radius = radius + int(10 * remaining)
+            ring_radius = max(ring_radius, radius + 2)
+            cv2.circle(frame, (cx, cy), ring_radius, ring_color, 2)
 
         cv2.circle(
             frame,
-            (int(ball.x), int(ball.y)),
-            ball.radius,
-            (0,0,255),
+            (cx, cy),
+            radius,
+            (0, 0, 255),
             -1
         )
 
@@ -168,19 +199,19 @@ def draw_instructions(frame):
     h, w, _ = frame.shape
     cv2.putText(
         frame,
-        "Move hands to pop balls",
+        "Move hands to pop balls (new balls are safe briefly)",
         (20, h - 25),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.55,
         (230, 230, 230),
-        2
+        2,
     )
 
 
 def render(frame, game, hands):
     _draw_top_banner(frame, "HAND POP!")
     draw_hands(frame, hands)
-    draw_balls(frame, game.balls)
+    draw_balls(frame, game.balls, now=time.perf_counter())
     draw_confetti(frame, game.confetti_particles)
     draw_score(frame, game.score)
     draw_combo(frame, game.combo, game.multiplier)

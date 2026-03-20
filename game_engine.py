@@ -1,5 +1,6 @@
 import random
 import math
+import time
 from objects import Ball
 
 
@@ -21,6 +22,12 @@ class GameEngine:
 
         self.spawn_timer = 0
         self.base_spawn_interval = 40
+
+        # Fairness: don't remove a ball immediately after spawning.
+        # - visible for at least 3/5 seconds
+        # - travel through at least 15% of the screen (by path length)
+        self.min_ball_visible_seconds = 3 / 5  # 0.6s
+        self.min_ball_travel_fraction = 0.15
 
         # Confetti "pop" particles for kid-friendly feedback.
         # Stored as small flying pieces that fade out quickly.
@@ -46,7 +53,14 @@ class GameEngine:
 
 
     def spawn_ball(self):
-        ball = Ball(self.width, self.height, difficulty=self.difficulty())
+        ball = Ball(
+            self.width,
+            self.height,
+            difficulty=self.difficulty(),
+            spawn_time=time.perf_counter(),
+            min_visible_seconds=self.min_ball_visible_seconds,
+            min_travel_fraction=self.min_ball_travel_fraction,
+        )
         self.balls.append(ball)
 
     def spawn_confetti(self, x, y, multiplier):
@@ -157,19 +171,34 @@ class GameEngine:
         remaining = []
         removed_any = False
 
+        now = time.perf_counter()
+        min_travel_pixels = self.min_ball_travel_fraction * float(max(self.width, self.height))
+
         for ball in self.balls:
 
-            if (
+            is_offscreen = (
                 ball.y > self.height + ball.radius or
                 ball.y < -ball.radius or
                 ball.x < -ball.radius or
                 ball.x > self.width + ball.radius
-            ):
+            )
+
+            if not is_offscreen:
+                remaining.append(ball)
+                continue
+
+            # Fairness: don't immediately penalize for balls that are just spawned.
+            age_ok = ball.age_seconds(now) >= self.min_ball_visible_seconds
+            travel_ok = math.hypot(ball.x - ball.start_x, ball.y - ball.start_y) >= min_travel_pixels
+
+            if age_ok and travel_ok:
                 self.lives_left -= 1
                 if self.lives_left <= 0:
                     self.game_over = True
                 removed_any = True
             else:
+                # Keep the ball around until it has had time to "exist"
+                # and travel far enough to be fair to the player.
                 remaining.append(ball)
 
         self.balls = remaining
