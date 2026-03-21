@@ -314,16 +314,54 @@ def draw_combo_milestone(frame, combo_milestone):
         return
     m = combo_milestone.get("multiplier", 1)
     f = combo_milestone.get("frames", 0)
-    alpha = min(1.0, f / 12.0)
+    alpha = min(1.0, f / 14.0)
     h, w, _ = frame.shape
     text = f"COMBO x{m}!"
-    scale = 0.82
+    scale = 0.95
     thick = 2
     (tw, th), _ = cv2.getTextSize(text, _FONT, scale, thick)
     x = (w - tw) // 2
-    y = int(h * 0.35)
-    col = (int(255 * alpha), int(230 * alpha), int(120 * alpha))
+    y = int(h * 0.33)
+    col = (int(255 * alpha), int(235 * alpha), int(130 * alpha))
     _outlined_text(frame, text, x, y, scale, thick, col)
+
+
+def draw_juice_rim(frame, frames_left, tick):
+    """Gold pulse on the frame edge for milestones / new best / life pickup."""
+    if frames_left <= 0:
+        return
+    h, w, _ = frame.shape
+    pulse = 0.55 + 0.45 * math.sin(tick * 0.22)
+    thick = max(2, int(3 + 5 * (frames_left / 22.0) * pulse))
+    glow = _lerp_bgr((60, 140, 220), (120, 230, 255), pulse)
+    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), glow, thick, cv2.LINE_AA)
+
+
+def draw_hot_streak(frame, combo, tick):
+    if combo < 10:
+        return
+    h, w, _ = frame.shape
+    msg = "HOT STREAK!"
+    scale = 0.5
+    thick = 1
+    (tw, th), _ = cv2.getTextSize(msg, _FONT, scale, thick)
+    x = (w - tw) // 2
+    y = 70
+    flicker = 0.85 + 0.15 * math.sin(tick * 0.25)
+    col = (int(200 * flicker), int(220 * flicker), int(255 * flicker))
+    _outlined_text(frame, msg, x, y, scale, thick, col)
+
+
+def draw_chasing_best(frame, score, best_score):
+    if best_score <= 0 or score >= best_score:
+        return
+    gap = best_score - score
+    if gap < 1 or gap > 8:
+        return
+    msg = "1 pt to beat best!" if gap == 1 else f"{gap} pts to beat best!"
+    scale = 0.42
+    thick = 1
+    _outlined_text(frame, msg, 10, 44, scale, thick, (160, 200, 255))
 
 
 def draw_lives(frame, lives_left, lives_max):
@@ -558,6 +596,9 @@ def render(
     draw_floating_texts(frame, game.floating_texts)
     draw_combo_milestone(frame, game.combo_milestone)
     draw_countdown(frame, game.countdown_frames, ui_tick)
+    draw_chasing_best(frame, game.score, game.best_score)
+    draw_hot_streak(frame, game.combo, ui_tick)
+    draw_juice_rim(frame, game.juice_rim_frames, ui_tick)
 
     if game.game_over:
         draw_game_over(frame, game.score, game.best_score, ui_tick)

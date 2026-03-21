@@ -1,1 +1,6 @@
 __pycache__
+
+# Local high score + sidecars from robust save/load
+hand_pop_best.json
+hand_pop_best.corrupt.json
+hand_pop_best.json.tmp

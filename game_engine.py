@@ -14,16 +14,30 @@ def _load_best_score():
         if _SAVE_PATH.exists():
             data = json.loads(_SAVE_PATH.read_text(encoding="utf-8"))
             return max(0, int(data.get("best", 0)))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
+        try:
+            bad = _SAVE_PATH.with_suffix(".corrupt.json")
+            if bad.exists():
+                bad.unlink()
+            _SAVE_PATH.rename(bad)
+        except OSError:
+            pass
+    except OSError:
         pass
     return 0
 
 
 def _save_best_score(value):
     try:
-        _SAVE_PATH.write_text(json.dumps({"best": value}, indent=None), encoding="utf-8")
+        payload = json.dumps({"best": int(value)}, indent=None)
+        tmp = _SAVE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(_SAVE_PATH)
     except OSError:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class GameEngine:
@@ -55,6 +69,7 @@ class GameEngine:
         self.countdown_frames = 0
         self.floating_texts = []
         self.combo_milestone = None
+        self.juice_rim_frames = 0
 
     def start_countdown(self, frames=72):
         self.countdown_frames = frames
@@ -71,6 +86,7 @@ class GameEngine:
         self.countdown_frames = 0
         self.floating_texts = []
         self.combo_milestone = None
+        self.juice_rim_frames = 0
 
 
     def difficulty(self):
@@ -93,10 +109,10 @@ class GameEngine:
         )
         self.balls.append(ball)
 
-    def spawn_confetti(self, x, y, multiplier, color):
+    def spawn_confetti(self, x, y, multiplier, color, burst_mult=1.0):
         # Create a small burst of particles at (x, y).
         # Particle count scales lightly with multiplier.
-        n = int(10 + min(25, multiplier * 6))
+        n = int((10 + min(25, multiplier * 6)) * burst_mult)
         # Same color as the ball; particles share it and fade via draw_confetti.
         burst_color = color
 
@@ -155,6 +171,9 @@ class GameEngine:
             self.combo_milestone["frames"] -= 1
             if self.combo_milestone["frames"] <= 0:
                 self.combo_milestone = None
+
+        if self.juice_rim_frames > 0:
+            self.juice_rim_frames -= 1
 
         if self.countdown_frames > 0:
             self.countdown_frames -= 1
@@ -242,24 +261,59 @@ class GameEngine:
                 if dist < ball.radius + hand["radius"]:
                     if ball.is_health_ball:
                         self.lives_left = min(self.lives_max, self.lives_left + 1)
+                        self.juice_rim_frames = max(self.juice_rim_frames, 14)
                         self.floating_texts.append({
-                            "text": "+1",
+                            "text": "LIFE!",
                             "x": float(ball.x),
-                            "y": float(ball.y),
-                            "vx": 0.0,
-                            "vy": -1.4,
-                            "life": 50,
-                            "max_life": 50,
-                            "color": (0, 220, 0),
-                            "scale": 0.9,
+                            "y": float(ball.y) - 8,
+                            "vx": random.uniform(-0.25, 0.25),
+                            "vy": -1.1,
+                            "life": 52,
+                            "max_life": 52,
+                            "color": (120, 255, 160),
+                            "scale": 0.72,
                         })
                     else:
+                        old_best = self.best_score
                         old_mult = self.multiplier
                         self.combo += 1
                         self.multiplier = 1 + (self.combo // 5)
-                        self.score += self.multiplier
+                        pts = self.multiplier
+                        self.score += pts
+                        self.floating_texts.append({
+                            "text": f"+{pts}",
+                            "x": float(ball.x),
+                            "y": float(ball.y) - float(ball.radius) * 0.35,
+                            "vx": random.uniform(-0.35, 0.35),
+                            "vy": -1.25,
+                            "life": 40,
+                            "max_life": 40,
+                            "color": (140, 230, 255),
+                            "scale": 0.68,
+                        })
                         if self.multiplier > old_mult:
-                            self.combo_milestone = {"frames": 48, "multiplier": self.multiplier}
+                            self.combo_milestone = {"frames": 52, "multiplier": self.multiplier}
+                            self.juice_rim_frames = max(self.juice_rim_frames, 22)
+                            self.spawn_confetti(
+                                ball.x,
+                                ball.y,
+                                self.multiplier + 2,
+                                (100, 210, 255),
+                                burst_mult=1.55,
+                            )
+                        if self.score > old_best:
+                            self.juice_rim_frames = max(self.juice_rim_frames, 30)
+                            self.floating_texts.append({
+                                "text": "NEW BEST!",
+                                "x": float(self.width) * 0.5,
+                                "y": float(self.height) * 0.22,
+                                "vx": 0.0,
+                                "vy": -0.45,
+                                "life": 55,
+                                "max_life": 55,
+                                "color": (180, 255, 255),
+                                "scale": 0.62,
+                            })
                     self.spawn_confetti(ball.x, ball.y, self.multiplier, ball.color)
                     hit = True
                     break
