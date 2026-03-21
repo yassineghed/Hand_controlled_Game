@@ -97,8 +97,10 @@ def _modal_border(frame, x1, y1, x2, y2, tick):
 
 
 def _draw_top_banner(frame, title, tick=0):
-    """Gameplay: no bar — title floats on camera. (tick unused; kept for API.)"""
-    _outlined_text(frame, title, 16, 40, 0.72, 2, (248, 252, 255))
+    """Optional tiny title — skip when empty to keep the playfield clear."""
+    if not title:
+        return
+    _outlined_text(frame, title, 12, 24, 0.48, 1, (240, 245, 255))
 
 
 def _clamp_bgr(b, g, r):
@@ -246,14 +248,14 @@ def draw_confetti(frame, particles):
 
 def draw_score(frame, score, best_score):
     h, w, _ = frame.shape
-    scale = 0.75
-    thickness = 2
+    scale = 0.55
+    thickness = 1
     s_text = f"Score {score}"
     b_text = f"Best {best_score}"
     (sw, _), _ = cv2.getTextSize(s_text, _FONT, scale, thickness)
     (bw, _), _ = cv2.getTextSize(b_text, _FONT, scale, thickness)
-    _outlined_text(frame, s_text, 16, 40, scale, thickness, (252, 252, 255))
-    _outlined_text(frame, b_text, w - bw - 16, 40, scale, thickness, (200, 220, 255))
+    _outlined_text(frame, s_text, 10, 26, scale, thickness, (252, 252, 255))
+    _outlined_text(frame, b_text, w - bw - 10, 26, scale, thickness, (195, 215, 245))
 
 
 def draw_combo(frame, combo, multiplier):
@@ -261,11 +263,11 @@ def draw_combo(frame, combo, multiplier):
         return
     h, w, _ = frame.shape
     text = f"x{multiplier}"
-    scale = 0.95
-    thickness = 2
+    scale = 0.68
+    thickness = 1
     (tw, _), _ = cv2.getTextSize(text, _FONT, scale, thickness)
     x = int((w - tw) / 2)
-    y = 92
+    y = 54
     _outlined_text(frame, text, x, y, scale, thickness, (200, 230, 255))
 
 
@@ -315,8 +317,8 @@ def draw_combo_milestone(frame, combo_milestone):
     alpha = min(1.0, f / 12.0)
     h, w, _ = frame.shape
     text = f"COMBO x{m}!"
-    scale = 1.1
-    thick = 3
+    scale = 0.82
+    thick = 2
     (tw, th), _ = cv2.getTextSize(text, _FONT, scale, thick)
     x = (w - tw) // 2
     y = int(h * 0.35)
@@ -326,11 +328,11 @@ def draw_combo_milestone(frame, combo_milestone):
 
 def draw_lives(frame, lives_left, lives_max):
     h, w, _ = frame.shape
-    spacing = 20
-    r = 7
+    spacing = 16
+    r = 5
     total_w = (lives_max - 1) * spacing
     x0 = (w - total_w) // 2
-    y = 58
+    y = 42
 
     if lives_left >= 4:
         on_color = (0, 220, 0)
@@ -500,14 +502,14 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
 
 def draw_instructions(frame, game, tick=0):
     h, w, _ = frame.shape
-    y1 = h - 34
-    y2 = h - 12
+    y1 = h - 26
+    y2 = h - 8
     _outlined_text(
         frame,
         "Pop colored balls for score",
-        18,
+        10,
         y1,
-        0.52,
+        0.42,
         1,
         (232, 236, 245),
     )
@@ -515,13 +517,13 @@ def draw_instructions(frame, game, tick=0):
         line2 = "Green + life pickups unlock after you lose a heart"
     else:
         line2 = "Green + = +1 life (missing it is OK)"
-    s2 = 0.52
+    s2 = 0.42
     thick = 1
     for _ in range(12):
         (tw2, _), _ = cv2.getTextSize(line2, _FONT, s2, thick)
         if tw2 <= w - 32:
             break
-        s2 = max(0.4, s2 - 0.035)
+        s2 = max(0.32, s2 - 0.03)
     _outlined_text(frame, line2, 18, y2, s2, thick, (210, 218, 232))
 
 

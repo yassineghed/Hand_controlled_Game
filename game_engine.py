@@ -43,7 +43,7 @@ class GameEngine:
         self.game_over = False
 
         self.spawn_timer = 0
-        self.base_spawn_interval = 40
+        self.base_spawn_interval = 52
 
         self.min_ball_visible_seconds = 3 / 5
         self.min_ball_travel_fraction = 0.15
@@ -74,8 +74,8 @@ class GameEngine:
 
 
     def difficulty(self):
-        # Difficulty increases as score rises but stays clamped.
-        return min(4.0, 1.0 + max(0, self.score) / 25.0)
+        # Gentler ramp: more score per step, lower ceiling (easier on hands / camera lag).
+        return min(3.1, 1.0 + max(0, self.score) / 42.0)
 
 
     def spawn_ball(self):
@@ -166,7 +166,7 @@ class GameEngine:
 
         self.spawn_timer += 1
         diff = self.difficulty()
-        spawn_interval = int(max(12, self.base_spawn_interval / diff))
+        spawn_interval = int(max(24, self.base_spawn_interval / diff))
 
         if self.spawn_timer > spawn_interval:
             self.spawn_ball()
