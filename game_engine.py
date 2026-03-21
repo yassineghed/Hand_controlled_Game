@@ -2,11 +2,13 @@ import json
 import math
 import random
 import time
+from datetime import date
 from pathlib import Path
 
 from objects import Ball
 
 _SAVE_PATH = Path(__file__).resolve().parent / "hand_pop_best.json"
+_PROGRESS_PATH = Path(__file__).resolve().parent / "hand_pop_progress.json"
 
 
 def _load_best_score():
@@ -40,6 +42,41 @@ def _save_best_score(value):
             pass
 
 
+def _load_progress():
+    try:
+        if _PROGRESS_PATH.exists():
+            data = json.loads(_PROGRESS_PATH.read_text(encoding="utf-8"))
+            return {
+                "coins": max(0, int(data.get("coins", 0))),
+                "xp": max(0, int(data.get("xp", 0))),
+                "level": max(1, int(data.get("level", 1))),
+            }
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        pass
+    return {"coins": 0, "xp": 0, "level": 1}
+
+
+def _save_progress(coins, xp, level):
+    try:
+        payload = json.dumps(
+            {"coins": int(coins), "xp": int(xp), "level": int(level)},
+            indent=None,
+        )
+        tmp = _PROGRESS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(_PROGRESS_PATH)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _mission_rng_seed(day_ordinal: int, reroll_count: int):
+    # Stable daily seed with small reroll offsets.
+    return int(day_ordinal) * 7919 + int(reroll_count) * 101
+
+
 class GameEngine:
 
     def __init__(self, width, height):
@@ -49,6 +86,11 @@ class GameEngine:
         self.balls = []
         self.score = 0
         self.best_score = _load_best_score()
+        progress = _load_progress()
+        self.coins = progress["coins"]
+        self.xp = progress["xp"]
+        self.level = progress["level"]
+        self.stage_name = "Rookie"
         self.combo = 0
         self.multiplier = 1
 
@@ -75,6 +117,18 @@ class GameEngine:
         self.shake_frames = 0
         self.shake_strength = 0.0
         self.pending_audio_events = []
+        self.missions = []
+        self.run_pops = 0
+        self.run_health_pops = 0
+        self.run_misses = 0
+        self.run_best_combo = 0
+        self.run_reward_coins = 0
+        self.run_missions_completed = 0
+        self.session_summary = None
+        self.mission_rerolls = 0
+        self.mission_day = date.today().toordinal()
+        self._sync_stage()
+        self._generate_missions()
 
     def start_countdown(self, frames=72):
         self.countdown_frames = frames
@@ -97,11 +151,147 @@ class GameEngine:
         self.shake_frames = 0
         self.shake_strength = 0.0
         self.pending_audio_events = []
+        self.run_pops = 0
+        self.run_health_pops = 0
+        self.run_misses = 0
+        self.run_best_combo = 0
+        self.run_reward_coins = 0
+        self.run_missions_completed = 0
+        self.session_summary = None
+        self.mission_rerolls = 0
+        self.mission_day = date.today().toordinal()
+        self._sync_stage()
+        self._generate_missions()
 
 
     def difficulty(self):
-        # Gentler ramp: more score per step, lower ceiling (easier on hands / camera lag).
-        return min(3.1, 1.0 + max(0, self.score) / 42.0)
+        # Scale with score + account level tiers; still clamped for fairness.
+        tier_bonus = {
+            "Rookie": 0.00,
+            "Skilled": 0.10,
+            "Expert": 0.18,
+            "Master": 0.24,
+        }.get(self.stage_name, 0.0)
+        return min(3.3, 1.0 + max(0, self.score) / 42.0 + tier_bonus)
+
+    def _xp_needed(self, level=None):
+        lv = self.level if level is None else int(level)
+        return 60 + lv * 28
+
+    def _sync_stage(self):
+        if self.level >= 16:
+            self.stage_name = "Master"
+        elif self.level >= 11:
+            self.stage_name = "Expert"
+        elif self.level >= 6:
+            self.stage_name = "Skilled"
+        else:
+            self.stage_name = "Rookie"
+
+    @property
+    def xp_next(self):
+        return self._xp_needed(self.level)
+
+    def _grant_progress(self, coins=0, xp=0):
+        self.coins += int(max(0, coins))
+        self.xp += int(max(0, xp))
+        leveled_up = False
+        while self.xp >= self._xp_needed(self.level):
+            self.xp -= self._xp_needed(self.level)
+            self.level += 1
+            self._sync_stage()
+            leveled_up = True
+            self.floating_texts.append({
+                "text": f"LEVEL {self.level}!",
+                "x": float(self.width) * 0.5,
+                "y": float(self.height) * 0.28,
+                "vx": 0.0,
+                "vy": -0.5,
+                "life": 60,
+                "max_life": 60,
+                "color": (170, 230, 255),
+                "scale": 0.7,
+            })
+            self._emit_audio("mission")
+        if leveled_up:
+            # Fresh mission set per level (no carry-over progress).
+            self.mission_day = date.today().toordinal()
+            self.mission_rerolls += 1
+            self._generate_missions()
+        _save_progress(self.coins, self.xp, self.level)
+
+    def _generate_missions(self):
+        rng = random.Random(_mission_rng_seed(self.mission_day, self.mission_rerolls))
+        templates = [
+            ("pop", "Pop {n} balls", rng.randint(18, 34), rng.randint(18, 32)),
+            ("score", "Reach score {n}", rng.randint(45, 95), rng.randint(22, 40)),
+            ("combo", "Reach combo x{n}", rng.randint(3, 6), rng.randint(24, 45)),
+            ("heal", "Collect {n} health pickups", rng.randint(2, 4), rng.randint(20, 34)),
+        ]
+        rng.shuffle(templates)
+        chosen = templates[:3]
+        self.missions = [
+            {
+                "id": k,
+                "label": label.format(n=target),
+                "target": int(target),
+                "progress": 0,
+                "reward": int(reward),
+                "done": False,
+            }
+            for (k, label, target, reward) in chosen
+        ]
+
+    def reroll_missions(self):
+        self.mission_rerolls += 1
+        self._generate_missions()
+        self._emit_audio("mission")
+
+    def _tick_missions(self):
+        for m in self.missions:
+            if m["done"]:
+                continue
+            if m["id"] == "pop":
+                m["progress"] = min(m["target"], self.run_pops)
+            elif m["id"] == "score":
+                m["progress"] = min(m["target"], self.score)
+            elif m["id"] == "combo":
+                m["progress"] = min(m["target"], self.run_best_combo)
+            elif m["id"] == "heal":
+                m["progress"] = min(m["target"], self.run_health_pops)
+
+            if m["progress"] >= m["target"]:
+                m["done"] = True
+                self.run_missions_completed += 1
+                self.run_reward_coins += m["reward"]
+                self._grant_progress(coins=m["reward"], xp=m["reward"] * 2)
+                self.floating_texts.append({
+                    "text": f"MISSION +{m['reward']}c",
+                    "x": float(self.width) * 0.5,
+                    "y": float(self.height) * 0.18,
+                    "vx": 0.0,
+                    "vy": -0.45,
+                    "life": 55,
+                    "max_life": 55,
+                    "color": (150, 235, 255),
+                    "scale": 0.58,
+                })
+                self.juice_rim_frames = max(self.juice_rim_frames, 18)
+                self._emit_audio("mission")
+
+    def _build_session_summary(self):
+        total_events = self.run_pops + self.run_misses
+        accuracy = 100.0 * self.run_pops / total_events if total_events > 0 else 100.0
+        return {
+            "pops": int(self.run_pops),
+            "misses": int(self.run_misses),
+            "accuracy": float(accuracy),
+            "best_combo": int(self.run_best_combo),
+            "missions_completed": int(self.run_missions_completed),
+            "coins_earned": int(self.run_reward_coins),
+            "level": int(self.level),
+            "stage": str(self.stage_name),
+        }
 
 
     def spawn_ball(self):
@@ -227,6 +417,7 @@ class GameEngine:
         self.check_collisions(hands)
 
         self.remove_offscreen_balls()
+        self._tick_missions()
 
     def _ball_is_fair(self, ball, now):
         """True when age + travel rules allow the ball to leave / count as a miss."""
@@ -289,6 +480,7 @@ class GameEngine:
                 if dist < ball.radius + hand["radius"]:
                     if ball.is_health_ball:
                         self.lives_left = min(self.lives_max, self.lives_left + 1)
+                        self.run_health_pops += 1
                         self.juice_rim_frames = max(self.juice_rim_frames, 14)
                         self.quiet_frames = max(self.quiet_frames, 36)
                         self.shake_frames = max(self.shake_frames, 6)
@@ -309,6 +501,8 @@ class GameEngine:
                         old_best = self.best_score
                         old_mult = self.multiplier
                         self.combo += 1
+                        self.run_pops += 1
+                        self.run_best_combo = max(self.run_best_combo, self.combo)
                         self.multiplier = 1 + (self.combo // 5)
                         pts = self.multiplier
                         self.score += pts
@@ -399,6 +593,7 @@ class GameEngine:
             # Fairness: don't immediately penalize for balls that are just spawned.
             if self._ball_is_fair(ball, now):
                 self.lives_left -= 1
+                self.run_misses += 1
                 self.floating_texts.append({
                     "text": "−1",
                     "x": float(self.width) / 2,
@@ -412,6 +607,7 @@ class GameEngine:
                 })
                 if self.lives_left <= 0:
                     self.game_over = True
+                    self.session_summary = self._build_session_summary()
                     _save_best_score(self.best_score)
                     self._emit_audio("game_over")
                 else:

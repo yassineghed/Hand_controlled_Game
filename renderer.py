@@ -266,6 +266,35 @@ def draw_score(frame, score, best_score):
     _outlined_text(frame, b_text, w - bw - 10, 26, scale, thickness, (195, 215, 245))
 
 
+def draw_progression(frame, level, stage_name, xp, xp_next, coins):
+    h, w, _ = frame.shape
+    _outlined_text(frame, f"Lv {level} · {stage_name}", 10, 48, 0.42, 1, (195, 220, 255))
+    _outlined_text(frame, f"{coins}c", w - 54, 48, 0.42, 1, (255, 230, 150))
+    bw = 120
+    bh = 6
+    bx = 10
+    by = 54
+    t = 0.0 if xp_next <= 0 else max(0.0, min(1.0, xp / float(xp_next)))
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (34, 36, 52), -1)
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (88, 98, 125), 1)
+    fw = int((bw - 2) * t)
+    if fw > 0:
+        cv2.rectangle(frame, (bx + 1, by + 1), (bx + 1 + fw, by + bh - 1), (120, 210, 255), -1)
+
+
+def draw_missions(frame, missions):
+    if not missions:
+        return
+    y = 72
+    for m in missions[:3]:
+        done = bool(m.get("done", False))
+        text = f"[{int(m.get('progress', 0))}/{int(m.get('target', 0))}] {m.get('label', '')}"
+        col = (130, 230, 170) if done else (185, 195, 220)
+        _outlined_text(frame, text, 10, y, 0.38, 1, col)
+        y += 18
+    _outlined_text(frame, "Press M to reroll missions", 10, y + 4, 0.33, 1, (145, 165, 190))
+
+
 def draw_combo(frame, combo, multiplier):
     if multiplier <= 1:
         return
@@ -398,7 +427,7 @@ def draw_lives(frame, lives_left, lives_max):
         cv2.circle(frame, (cx, y), r, color, -1)
 
 
-def draw_game_over(frame, score, best_score, tick=0):
+def draw_game_over(frame, score, best_score, summary=None, tick=0):
     h, w, _ = frame.shape
     box_w = int(min(w * 0.62, 560))
     box_h = 188
@@ -429,17 +458,60 @@ def draw_game_over(frame, score, best_score, tick=0):
     )
 
     subtitle = "Press R to restart"
-    (sw2, sh2), _ = cv2.getTextSize(subtitle, _FONT, 0.88, 2)
+    (sw2, sh2), _ = cv2.getTextSize(subtitle, _FONT, 0.82, 2)
     cv2.putText(
         frame,
         subtitle,
-        ((w - sw2) // 2, ty + th + 18 + sh + 20),
+        ((w - sw2) // 2, ty + th + 18 + sh + 54),
         _FONT,
-        0.88,
+        0.82,
         UI["subtitle"],
         2,
         cv2.LINE_AA,
     )
+    if summary:
+        info = (
+            f"Pops {summary.get('pops', 0)}  Misses {summary.get('misses', 0)}  "
+            f"Acc {summary.get('accuracy', 0.0):.0f}%  Best Combo {summary.get('best_combo', 0)}"
+        )
+        (iw, _), _ = cv2.getTextSize(info, _FONT, 0.50, 1)
+        cv2.putText(
+            frame,
+            info,
+            ((w - iw) // 2, ty + th + 18 + sh + 24),
+            _FONT,
+            0.50,
+            (180, 200, 220),
+            1,
+            cv2.LINE_AA,
+        )
+        rew = (
+            f"Missions +{summary.get('coins_earned', 0)}c  "
+            f"Completed {summary.get('missions_completed', 0)}"
+        )
+        (rw, _), _ = cv2.getTextSize(rew, _FONT, 0.50, 1)
+        cv2.putText(
+            frame,
+            rew,
+            ((w - rw) // 2, ty + th + 18 + sh + 42),
+            _FONT,
+            0.50,
+            (160, 220, 190),
+            1,
+            cv2.LINE_AA,
+        )
+        stage = f"Level {summary.get('level', 1)} · {summary.get('stage', 'Rookie')}"
+        (vw, _), _ = cv2.getTextSize(stage, _FONT, 0.50, 1)
+        cv2.putText(
+            frame,
+            stage,
+            ((w - vw) // 2, ty + th + 18 + sh + 60),
+            _FONT,
+            0.50,
+            (185, 205, 230),
+            1,
+            cv2.LINE_AA,
+        )
 
 
 def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
@@ -607,6 +679,8 @@ def render(
     draw_balls(frame, game.balls, game.frame_count)
     draw_confetti(frame, game.confetti_particles)
     draw_score(frame, game.score, game.best_score)
+    draw_progression(frame, game.level, game.stage_name, game.xp, game.xp_next, game.coins)
+    draw_missions(frame, game.missions)
     draw_lives(frame, game.lives_left, game.lives_max)
     draw_floating_texts(frame, game.floating_texts, max_items=2 if quiet_on else 6)
 
@@ -624,6 +698,6 @@ def render(
         draw_juice_rim(frame, game.juice_rim_frames, ui_tick)
 
     if game.game_over:
-        draw_game_over(frame, game.score, game.best_score, ui_tick)
+        draw_game_over(frame, game.score, game.best_score, game.session_summary, ui_tick)
     elif not countdown_on and not quiet_on:
         draw_instructions(frame, game, ui_tick)
