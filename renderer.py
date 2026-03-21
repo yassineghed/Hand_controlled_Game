@@ -295,6 +295,28 @@ def draw_missions(frame, missions):
     _outlined_text(frame, "Press M to reroll missions", 10, y + 4, 0.33, 1, (145, 165, 190))
 
 
+def draw_level_flow(frame, play_level, missions, transition_pending, transition_frames):
+    h, w, _ = frame.shape
+    done = sum(1 for m in missions if bool(m.get("done", False)))
+    total = max(1, len(missions))
+    t = done / float(total)
+    label = f"Level {play_level}"
+    _outlined_text(frame, label, (w // 2) - 34, 24, 0.46, 1, (220, 230, 255))
+    bw = 120
+    bh = 6
+    bx = (w - bw) // 2
+    by = 30
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (34, 36, 52), -1)
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (88, 98, 125), 1)
+    fw = int((bw - 2) * t)
+    if fw > 0:
+        cv2.rectangle(frame, (bx + 1, by + 1), (bx + 1 + fw, by + bh - 1), (120, 210, 255), -1)
+    if transition_pending:
+        msg = "LEVEL COMPLETE! Next level..."
+        _outlined_text(frame, msg, (w // 2) - 130, int(h * 0.18), 0.58, 2, (255, 235, 170))
+        _outlined_text(frame, "Press N to continue now", (w // 2) - 100, int(h * 0.18) + 24, 0.40, 1, (205, 215, 235))
+
+
 def draw_combo(frame, combo, multiplier):
     if multiplier <= 1:
         return
@@ -680,6 +702,13 @@ def render(
     draw_confetti(frame, game.confetti_particles)
     draw_score(frame, game.score, game.best_score)
     draw_progression(frame, game.level, game.stage_name, game.xp, game.xp_next, game.coins)
+    draw_level_flow(
+        frame,
+        game.play_level,
+        game.missions,
+        game.level_transition_pending,
+        game.level_complete_frames,
+    )
     draw_missions(frame, game.missions)
     draw_lives(frame, game.lives_left, game.lives_max)
     draw_floating_texts(frame, game.floating_texts, max_items=2 if quiet_on else 6)

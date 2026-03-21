@@ -118,6 +118,10 @@ class GameEngine:
         self.shake_strength = 0.0
         self.pending_audio_events = []
         self.missions = []
+        self.play_level = 1
+        self.level_transition_pending = False
+        self.level_complete_frames = 0
+        self.mission_base = {"pops": 0, "score": 0, "combo": 0, "heal": 0}
         self.run_pops = 0
         self.run_health_pops = 0
         self.run_misses = 0
@@ -151,6 +155,10 @@ class GameEngine:
         self.shake_frames = 0
         self.shake_strength = 0.0
         self.pending_audio_events = []
+        self.play_level = 1
+        self.level_transition_pending = False
+        self.level_complete_frames = 0
+        self.mission_base = {"pops": 0, "score": 0, "combo": 0, "heal": 0}
         self.run_pops = 0
         self.run_health_pops = 0
         self.run_misses = 0
@@ -214,19 +222,38 @@ class GameEngine:
             })
             self._emit_audio("mission")
         if leveled_up:
-            # Fresh mission set per level (no carry-over progress).
-            self.mission_day = date.today().toordinal()
-            self.mission_rerolls += 1
-            self._generate_missions()
+            self.juice_rim_frames = max(self.juice_rim_frames, 18)
         _save_progress(self.coins, self.xp, self.level)
 
     def _generate_missions(self):
-        rng = random.Random(_mission_rng_seed(self.mission_day, self.mission_rerolls))
+        seed = _mission_rng_seed(self.mission_day + self.play_level * 17, self.mission_rerolls)
+        rng = random.Random(seed)
+        lvl_scale = max(0, self.play_level - 1)
         templates = [
-            ("pop", "Pop {n} balls", rng.randint(18, 34), rng.randint(18, 32)),
-            ("score", "Reach score {n}", rng.randint(45, 95), rng.randint(22, 40)),
-            ("combo", "Reach combo x{n}", rng.randint(3, 6), rng.randint(24, 45)),
-            ("heal", "Collect {n} health pickups", rng.randint(2, 4), rng.randint(20, 34)),
+            (
+                "pop",
+                "Pop {n} balls",
+                rng.randint(18 + lvl_scale * 2, 34 + lvl_scale * 3),
+                rng.randint(18 + lvl_scale, 32 + lvl_scale * 2),
+            ),
+            (
+                "score",
+                "Reach score {n}",
+                rng.randint(45 + lvl_scale * 4, 95 + lvl_scale * 6),
+                rng.randint(22 + lvl_scale * 2, 40 + lvl_scale * 3),
+            ),
+            (
+                "combo",
+                "Reach combo x{n}",
+                rng.randint(3 + lvl_scale // 3, 6 + lvl_scale // 2),
+                rng.randint(24 + lvl_scale * 2, 45 + lvl_scale * 3),
+            ),
+            (
+                "heal",
+                "Collect {n} health pickups",
+                rng.randint(2, 4 + lvl_scale // 4),
+                rng.randint(20 + lvl_scale * 2, 34 + lvl_scale * 3),
+            ),
         ]
         rng.shuffle(templates)
         chosen = templates[:3]
@@ -241,24 +268,44 @@ class GameEngine:
             }
             for (k, label, target, reward) in chosen
         ]
+        self.mission_base = {
+            "pops": self.run_pops,
+            "score": self.score,
+            "combo": self.run_best_combo,
+            "heal": self.run_health_pops,
+        }
 
     def reroll_missions(self):
         self.mission_rerolls += 1
         self._generate_missions()
         self._emit_audio("mission")
 
+    def _advance_play_level(self):
+        self.play_level += 1
+        self.level_transition_pending = False
+        self.level_complete_frames = 0
+        self.mission_rerolls = 0
+        self.balls = []
+        self.start_countdown(54)
+        self._generate_missions()
+        self._emit_audio("mission")
+
+    def force_next_level(self):
+        if self.level_transition_pending:
+            self._advance_play_level()
+
     def _tick_missions(self):
         for m in self.missions:
             if m["done"]:
                 continue
             if m["id"] == "pop":
-                m["progress"] = min(m["target"], self.run_pops)
+                m["progress"] = min(m["target"], self.run_pops - self.mission_base["pops"])
             elif m["id"] == "score":
-                m["progress"] = min(m["target"], self.score)
+                m["progress"] = min(m["target"], self.score - self.mission_base["score"])
             elif m["id"] == "combo":
-                m["progress"] = min(m["target"], self.run_best_combo)
+                m["progress"] = min(m["target"], self.run_best_combo - self.mission_base["combo"])
             elif m["id"] == "heal":
-                m["progress"] = min(m["target"], self.run_health_pops)
+                m["progress"] = min(m["target"], self.run_health_pops - self.mission_base["heal"])
 
             if m["progress"] >= m["target"]:
                 m["done"] = True
@@ -278,6 +325,12 @@ class GameEngine:
                 })
                 self.juice_rim_frames = max(self.juice_rim_frames, 18)
                 self._emit_audio("mission")
+        if self.missions and all(bool(m.get("done", False)) for m in self.missions):
+            if not self.level_transition_pending:
+                self.level_transition_pending = True
+                self.level_complete_frames = 90
+                self.juice_rim_frames = max(self.juice_rim_frames, 28)
+                self._emit_audio("combo_up")
 
     def _build_session_summary(self):
         total_events = self.run_pops + self.run_misses
@@ -291,6 +344,7 @@ class GameEngine:
             "coins_earned": int(self.run_reward_coins),
             "level": int(self.level),
             "stage": str(self.stage_name),
+            "play_level": int(self.play_level),
         }
 
 
@@ -395,6 +449,11 @@ class GameEngine:
 
         if self.countdown_frames > 0:
             self.countdown_frames -= 1
+            return
+        if self.level_transition_pending:
+            self.level_complete_frames -= 1
+            if self.level_complete_frames <= 0:
+                self._advance_play_level()
             return
 
         if self.score > self.best_score:

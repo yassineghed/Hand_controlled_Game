@@ -177,6 +177,8 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == 27:
                 break
+            if key in (ord("n"), ord("N")) and not game.game_over:
+                game.force_next_level()
             if key in (ord("m"), ord("M")) and not game.game_over:
                 game.reroll_missions()
             if key in (ord("r"), ord("R")) and game.game_over:
