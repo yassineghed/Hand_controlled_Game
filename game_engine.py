@@ -1,7 +1,29 @@
-import random
+import json
 import math
+import random
 import time
+from pathlib import Path
+
 from objects import Ball
+
+_SAVE_PATH = Path(__file__).resolve().parent / "hand_pop_best.json"
+
+
+def _load_best_score():
+    try:
+        if _SAVE_PATH.exists():
+            data = json.loads(_SAVE_PATH.read_text(encoding="utf-8"))
+            return max(0, int(data.get("best", 0)))
+    except (json.JSONDecodeError, OSError):
+        pass
+    return 0
+
+
+def _save_best_score(value):
+    try:
+        _SAVE_PATH.write_text(json.dumps({"best": value}, indent=None), encoding="utf-8")
+    except OSError:
+        pass
 
 
 class GameEngine:
@@ -12,10 +34,10 @@ class GameEngine:
 
         self.balls = []
         self.score = 0
+        self.best_score = _load_best_score()
         self.combo = 0
         self.multiplier = 1
 
-        # Kids-friendly: use lives instead of reducing score on misses.
         self.lives_max = 5
         self.lives_left = self.lives_max
         self.game_over = False
@@ -23,17 +45,19 @@ class GameEngine:
         self.spawn_timer = 0
         self.base_spawn_interval = 40
 
-        # Fairness: don't remove a ball immediately after spawning.
-        # - visible for at least 3/5 seconds
-        # - travel through at least 15% of the screen (by path length)
-        self.min_ball_visible_seconds = 3 / 5  # 0.6s
+        self.min_ball_visible_seconds = 3 / 5
         self.min_ball_travel_fraction = 0.15
 
-        # Confetti "pop" particles for kid-friendly feedback.
-        # Stored as small flying pieces that fade out quickly.
         self.confetti_particles = []
         self.confetti_gravity = 0.35
         self.frame_count = 0
+
+        self.countdown_frames = 0
+        self.floating_texts = []
+        self.combo_milestone = None
+
+    def start_countdown(self, frames=72):
+        self.countdown_frames = frames
 
     def reset(self):
         self.balls = []
@@ -44,7 +68,9 @@ class GameEngine:
         self.game_over = False
         self.spawn_timer = 0
         self.confetti_particles = []
-        self.frame_count = 0
+        self.countdown_frames = 0
+        self.floating_texts = []
+        self.combo_milestone = None
 
 
     def difficulty(self):
@@ -107,6 +133,15 @@ class GameEngine:
                 alive.append(p)
         self.confetti_particles = alive
 
+    def update_floating_texts(self):
+        alive = []
+        for t in self.floating_texts:
+            t["x"] += t.get("vx", 0)
+            t["y"] += t.get("vy", 0)
+            t["life"] -= 1
+            if t["life"] > 0:
+                alive.append(t)
+        self.floating_texts = alive
 
     def update(self, hands):
         if self.game_over:
@@ -114,8 +149,21 @@ class GameEngine:
 
         self.frame_count += 1
         self.update_confetti()
+        self.update_floating_texts()
 
-        # Spawn ball faster as difficulty increases.
+        if self.combo_milestone is not None:
+            self.combo_milestone["frames"] -= 1
+            if self.combo_milestone["frames"] <= 0:
+                self.combo_milestone = None
+
+        if self.countdown_frames > 0:
+            self.countdown_frames -= 1
+            return
+
+        if self.score > self.best_score:
+            self.best_score = self.score
+            _save_best_score(self.best_score)
+
         self.spawn_timer += 1
         diff = self.difficulty()
         spawn_interval = int(max(12, self.base_spawn_interval / diff))
@@ -194,10 +242,24 @@ class GameEngine:
                 if dist < ball.radius + hand["radius"]:
                     if ball.is_health_ball:
                         self.lives_left = min(self.lives_max, self.lives_left + 1)
+                        self.floating_texts.append({
+                            "text": "+1",
+                            "x": float(ball.x),
+                            "y": float(ball.y),
+                            "vx": 0.0,
+                            "vy": -1.4,
+                            "life": 50,
+                            "max_life": 50,
+                            "color": (0, 220, 0),
+                            "scale": 0.9,
+                        })
                     else:
+                        old_mult = self.multiplier
                         self.combo += 1
                         self.multiplier = 1 + (self.combo // 5)
                         self.score += self.multiplier
+                        if self.multiplier > old_mult:
+                            self.combo_milestone = {"frames": 48, "multiplier": self.multiplier}
                     self.spawn_confetti(ball.x, ball.y, self.multiplier, ball.color)
                     hit = True
                     break
@@ -235,8 +297,20 @@ class GameEngine:
             # Fairness: don't immediately penalize for balls that are just spawned.
             if self._ball_is_fair(ball, now):
                 self.lives_left -= 1
+                self.floating_texts.append({
+                    "text": "−1",
+                    "x": float(self.width) / 2,
+                    "y": float(self.height) * 0.4,
+                    "vx": 0.0,
+                    "vy": -0.6,
+                    "life": 45,
+                    "max_life": 45,
+                    "color": (0, 0, 255),
+                    "scale": 1.1,
+                })
                 if self.lives_left <= 0:
                     self.game_over = True
+                    _save_best_score(self.best_score)
                 removed_any = True
             else:
                 # Keep the ball around until it has had time to "exist"

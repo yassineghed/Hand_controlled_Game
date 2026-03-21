@@ -78,6 +78,7 @@ def main():
                 steady_hands_frames += 1
                 if steady_hands_frames >= STEADY_HAND_FRAMES:
                     game_active = True
+                    game.start_countdown(72)
             else:
                 steady_hands_frames = 0
             renderer.render(
@@ -91,7 +92,7 @@ def main():
             )
         else:
             game.update(hands)
-            renderer.render(frame, game, hands, game_active=True)
+            renderer.render(frame, game, hands, game_active=True, ui_tick=ui_tick)
 
         cv2.imshow("Hand Game", frame)
         ui_tick += 1

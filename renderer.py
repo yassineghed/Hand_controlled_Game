@@ -4,9 +4,101 @@ import cv2
 import numpy as np
 
 
-# BGR — hands never use green (reserved for life / health pickups).
-_HAND_OUTER = (255, 220, 0)   # bright cyan
-_HAND_INNER = (255, 0, 180)   # magenta accent
+_FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+# --- Unified UI (BGR): same “night arcade” family everywhere ---
+UI = {
+    "grad_top": (42, 32, 58),
+    "grad_bot": (24, 20, 38),
+    "card": (44, 40, 56),
+    "track": (40, 38, 52),
+    "track_rim": (82, 90, 118),
+    "title": (200, 248, 255),
+    "title_sh": (14, 12, 22),
+    "subtitle": (195, 205, 225),
+    "hint": (165, 174, 196),
+    "accent": (255, 215, 120),  # warm highlight (progress sweep, borders)
+    "ok": (88, 200, 125),
+    "border": (90, 86, 110),
+    "hand_ok": (72, 210, 255),  # matches title family
+    "hand_idle": (58, 54, 64),
+    "hand_ring_ok": (210, 235, 255),
+    "hand_ring_idle": (92, 96, 108),
+}
+
+# Hands — cyan / magenta (distinct from life green)
+_HAND_OUTER = (255, 220, 0)
+_HAND_INNER = (255, 0, 180)
+
+
+def _grad_layer(h, w):
+    t = np.linspace(0, 1, h, dtype=np.float32).reshape(h, 1, 1)
+    top = np.array(UI["grad_top"], dtype=np.float32)
+    bot = np.array(UI["grad_bot"], dtype=np.float32)
+    g = top * (1.0 - t) + bot * t
+    return np.broadcast_to(g, (h, w, 3))
+
+
+def _shadow_text(frame, text, x, y, scale, thick, color, shadow=None):
+    if shadow is None:
+        shadow = UI["title_sh"]
+    cv2.putText(frame, text, (x + 2, y + 2), _FONT, scale, shadow, thick, cv2.LINE_AA)
+    cv2.putText(frame, text, (x, y), _FONT, scale, color, thick, cv2.LINE_AA)
+
+
+def _outlined_text(frame, text, x, y, scale, thick, fill, outline=None):
+    """Readable on any background — no tinted banner needed."""
+    if outline is None:
+        outline = (22, 20, 32)
+    ot = max(thick + 2, 3)
+    cv2.putText(frame, text, (x, y), _FONT, scale, outline, ot, cv2.LINE_AA)
+    cv2.putText(frame, text, (x, y), _FONT, scale, fill, thick, cv2.LINE_AA)
+
+
+def _progress_bar(frame, bx, by, bw, bh, tick, fill_t=None):
+    """Shared track; determinate fill_t in [0,1] or None = indeterminate sweep."""
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), UI["track"], -1)
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), UI["track_rim"], 1, cv2.LINE_AA)
+    inner_h = max(1, bh - 4)
+    if fill_t is not None:
+        fw = int((bw - 4) * max(0.0, min(1.0, fill_t)))
+        if fw > 2:
+            cv2.rectangle(
+                frame,
+                (bx + 2, by + 2),
+                (bx + 2 + fw, by + 2 + inner_h),
+                UI["ok"],
+                -1,
+            )
+    else:
+        phase = (tick * 5) % (bw + 100)
+        seg = min(100, bw // 2)
+        x0 = bx + 2 + phase - 40
+        x0c = max(bx + 2, x0)
+        x1c = min(bx + bw - 2, x0 + seg)
+        if x1c > x0c:
+            o = frame.copy()
+            cv2.rectangle(o, (x0c, by + 2), (x1c, by + 2 + inner_h), UI["accent"], -1)
+            cv2.addWeighted(o, 0.5, frame, 0.5, 0, frame)
+
+
+def _modal_blend_card(frame, x1, y1, x2, y2, cam_weight=0.38):
+    roi = frame[y1:y2, x1:x2].copy()
+    bh, bw = roi.shape[:2]
+    card = np.full((bh, bw, 3), UI["card"], dtype=np.uint8)
+    blended = cv2.addWeighted(roi, cam_weight, card, 1.0 - cam_weight, 0)
+    frame[y1:y2, x1:x2] = blended
+
+
+def _modal_border(frame, x1, y1, x2, y2, tick):
+    pulse = 0.5 + 0.5 * math.sin(tick * 0.11)
+    edge = _lerp_bgr(UI["border"], UI["accent"], 0.28 + 0.22 * pulse)
+    cv2.rectangle(frame, (x1, y1), (x2 - 1, y2 - 1), edge, 2, cv2.LINE_AA)
+
+
+def _draw_top_banner(frame, title, tick=0):
+    """Gameplay: no bar — title floats on camera. (tick unused; kept for API.)"""
+    _outlined_text(frame, title, 16, 40, 0.72, 2, (248, 252, 255))
 
 
 def _clamp_bgr(b, g, r):
@@ -28,67 +120,49 @@ def _lerp_bgr(a, b, t):
 
 def draw_loading_screen(camera_bgr, tick):
     """
-    Full-screen loading panel over a dimmed camera feed (or solid black).
-    `tick` increments each frame for animation.
+    Same gradient language as in-game banner + modals; full-screen over camera.
     """
     h, w = camera_bgr.shape[:2]
     cam = camera_bgr.astype(np.float32)
-    tcol = np.linspace(0, 1, h, dtype=np.float32).reshape(h, 1, 1)
-    top = np.array([42, 32, 58], dtype=np.float32)
-    bot = np.array([24, 20, 38], dtype=np.float32)
-    grad = top * (1.0 - tcol) + bot * tcol
-    grad = np.broadcast_to(grad, (h, w, 3))
-    out = (cam * 0.18 + grad * 0.82).astype(np.uint8)
+    grad = _grad_layer(h, w)
+    out = (cam * 0.20 + grad * 0.80).astype(np.uint8)
 
-    font = cv2.FONT_HERSHEY_SIMPLEX
     title = "HAND POP!"
     sub = "Preparing hand tracking"
     dots = "." * (1 + (tick // 12) % 3)
 
-    (tw, th), bl = cv2.getTextSize(title, font, 2.2, 5)
+    (tw, th), _ = cv2.getTextSize(title, _FONT, 2.15, 5)
     tx = (w - tw) // 2
-    ty = int(h * 0.38)
-    cv2.putText(out, title, (tx + 3, ty + 3), font, 2.2, (12, 10, 20), 5, cv2.LINE_AA)
-    cv2.putText(out, title, (tx, ty), font, 2.2, (200, 255, 255), 5, cv2.LINE_AA)
+    ty = int(h * 0.36)
+    _shadow_text(out, title, tx, ty, 2.15, 5, UI["title"])
 
-    (sw, sh), _ = cv2.getTextSize(sub + "...", font, 0.85, 2)
+    sub_line = sub + dots + " "
+    (sw, sh), _ = cv2.getTextSize(sub_line, _FONT, 0.82, 2)
     sx = (w - sw) // 2
-    sy = ty + th + 28
-    cv2.putText(out, sub + dots + "  ", (sx, sy), font, 0.85, (210, 220, 235), 2, cv2.LINE_AA)
+    sy = ty + th + 26
+    cv2.putText(out, sub_line, (sx, sy), _FONT, 0.82, UI["subtitle"], 2, cv2.LINE_AA)
 
-    bw, bh = int(min(w * 0.42, 520)), 12
+    bw, bh = int(min(w * 0.44, 540)), 12
     bx = (w - bw) // 2
-    by = int(h * 0.58)
-    cv2.rectangle(out, (bx, by), (bx + bw, by + bh), (38, 36, 48), -1)
-    cv2.rectangle(out, (bx, by), (bx + bw, by + bh), (95, 110, 140), 1)
-
-    phase = (tick * 5) % (bw + 120)
-    seg_w = min(100, bw // 2)
-    hx0 = bx + phase - 40
-    hx1 = hx0 + seg_w
-    hx0c = max(bx + 2, hx0)
-    hx1c = min(bx + bw - 2, hx1)
-    if hx1c > hx0c:
-        overlay = out.copy()
-        cv2.rectangle(overlay, (hx0c, by + 2), (hx1c, by + bh - 2), (255, 210, 120), -1)
-        cv2.addWeighted(overlay, 0.55, out, 0.45, 0, out)
+    by = int(h * 0.56)
+    _progress_bar(out, bx, by, bw, bh, tick, fill_t=None)
 
     for i in range(5):
         a = tick * 0.09 + i * 1.1
         px = int(w * 0.15 + i * (w * 0.17))
-        py = int(h * 0.72 + 14 * math.sin(a))
+        py = int(h * 0.70 + 14 * math.sin(a))
         pr = 4 + int(3 * (0.5 + 0.5 * math.sin(a * 1.3)))
-        cv2.circle(out, (px, py), pr, (120, 200, 255), -1, cv2.LINE_AA)
+        cv2.circle(out, (px, py), pr, UI["hand_ok"], -1, cv2.LINE_AA)
 
     hint = "Camera preview — wave when ready"
-    (hw, hh), _ = cv2.getTextSize(hint, font, 0.55, 1)
+    (hw, _), _ = cv2.getTextSize(hint, _FONT, 0.52, 1)
     cv2.putText(
         out,
         hint,
-        ((w - hw) // 2, h - 28),
-        font,
-        0.55,
-        (160, 175, 195),
+        ((w - hw) // 2, h - 26),
+        _FONT,
+        0.52,
+        UI["hint"],
         1,
         cv2.LINE_AA,
     )
@@ -170,69 +244,93 @@ def draw_confetti(frame, particles):
         cv2.circle(frame, (x, y), size, faded_color, -1)
 
 
-def draw_score(frame, score):
+def draw_score(frame, score, best_score):
     h, w, _ = frame.shape
-    text = f"Score {score}"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.9
+    scale = 0.75
     thickness = 2
-    (tw, _), _ = cv2.getTextSize(text, font, scale, thickness)
-    cv2.putText(
-        frame,
-        text,
-        (w - tw - 20, 45),
-        font,
-        scale,
-        (255, 255, 255),
-        thickness
-    )
+    s_text = f"Score {score}"
+    b_text = f"Best {best_score}"
+    (sw, _), _ = cv2.getTextSize(s_text, _FONT, scale, thickness)
+    (bw, _), _ = cv2.getTextSize(b_text, _FONT, scale, thickness)
+    _outlined_text(frame, s_text, 16, 40, scale, thickness, (252, 252, 255))
+    _outlined_text(frame, b_text, w - bw - 16, 40, scale, thickness, (200, 220, 255))
 
 
 def draw_combo(frame, combo, multiplier):
-    # Minimal UI: only show multiplier when it matters.
     if multiplier <= 1:
         return
     h, w, _ = frame.shape
     text = f"x{multiplier}"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 1.0
-    thickness = 3
-    (tw, _), _ = cv2.getTextSize(text, font, scale, thickness)
-    cv2.putText(
-        frame,
-        text,
-        (int((w - tw) / 2), 75),
-        font,
-        scale,
-        (255, 215, 0),
-        thickness
-    )
+    scale = 0.95
+    thickness = 2
+    (tw, _), _ = cv2.getTextSize(text, _FONT, scale, thickness)
+    x = int((w - tw) / 2)
+    y = 92
+    _outlined_text(frame, text, x, y, scale, thickness, (200, 230, 255))
 
 
-def _draw_top_banner(frame, title):
-    _, w, _ = frame.shape
-    panel_h = 80
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, panel_h), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
+def draw_floating_texts(frame, texts):
+    for t in texts:
+        cx, y = t["x"], int(t["y"])
+        life = t.get("life", 0)
+        max_life = t.get("max_life", 1)
+        alpha = max(0.35, life / max(max_life, 1))
+        scale = t.get("scale", 0.9)
+        thick = max(1, int(scale * 2))
+        col = tuple(int(c * alpha) for c in t.get("color", (255, 255, 255)))
+        (tw, th), _ = cv2.getTextSize(t["text"], _FONT, scale, thick)
+        x = int(cx) - tw // 2
+        _outlined_text(frame, t["text"], x, y, scale, thick, col)
 
-    cv2.putText(
-        frame,
-        title,
-        (18, 45),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
-        (200, 255, 255),
-        3
-    )
+
+def draw_countdown(frame, countdown_frames, tick=0):
+    total = 72
+    if countdown_frames <= 0 or total <= 0:
+        return
+    phase = (total - countdown_frames) // 18
+    if phase == 0:
+        label = "3"
+    elif phase == 1:
+        label = "2"
+    elif phase == 2:
+        label = "1"
+    else:
+        label = "GO!"
+    h, w, _ = frame.shape
+    scale = 2.2 if label != "GO!" else 2.0
+    thick = 4
+    (tw, th), _ = cv2.getTextSize(label, _FONT, scale, thick)
+    x = (w - tw) // 2
+    y = (h - th) // 2 + int(th * 0.4)
+    pulse = 0.9 + 0.15 * math.sin(tick * 0.2)
+    col = (int(255 * pulse), int(248 * pulse), int(220 * pulse))
+    _outlined_text(frame, label, x, y, scale, thick, col, outline=(25, 20, 35))
+
+
+def draw_combo_milestone(frame, combo_milestone):
+    if combo_milestone is None or combo_milestone.get("frames", 0) <= 0:
+        return
+    m = combo_milestone.get("multiplier", 1)
+    f = combo_milestone.get("frames", 0)
+    alpha = min(1.0, f / 12.0)
+    h, w, _ = frame.shape
+    text = f"COMBO x{m}!"
+    scale = 1.1
+    thick = 3
+    (tw, th), _ = cv2.getTextSize(text, _FONT, scale, thick)
+    x = (w - tw) // 2
+    y = int(h * 0.35)
+    col = (int(255 * alpha), int(230 * alpha), int(120 * alpha))
+    _outlined_text(frame, text, x, y, scale, thick, col)
 
 
 def draw_lives(frame, lives_left, lives_max):
-    # Minimal hearts row.
-    x0 = 20
-    y = 45
-    spacing = 22
-    r = 8
+    h, w, _ = frame.shape
+    spacing = 20
+    r = 7
+    total_w = (lives_max - 1) * spacing
+    x0 = (w - total_w) // 2
+    y = 58
 
     if lives_left >= 4:
         on_color = (0, 220, 0)
@@ -240,7 +338,7 @@ def draw_lives(frame, lives_left, lives_max):
         on_color = (0, 220, 220)
     else:
         on_color = (0, 0, 255)
-    off_color = (80, 80, 80)
+    off_color = (58, 56, 62)
 
     for i in range(lives_max):
         cx = x0 + i * spacing
@@ -248,47 +346,53 @@ def draw_lives(frame, lives_left, lives_max):
         cv2.circle(frame, (cx, y), r, color, -1)
 
 
-def draw_game_over(frame):
+def draw_game_over(frame, score, best_score, tick=0):
     h, w, _ = frame.shape
+    box_w = int(min(w * 0.62, 560))
+    box_h = 188
+    x1 = (w - box_w) // 2
+    y1 = (h - box_h) // 2
+    x2, y2 = x1 + box_w, y1 + box_h
 
-    box_w = int(w * 0.62)
-    box_h = 150
-    x1 = int((w - box_w) / 2)
-    y1 = int((h - box_h) / 2)
-    x2 = x1 + box_w
-    y2 = y1 + box_h
-
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+    _modal_blend_card(frame, x1, y1, x2, y2, cam_weight=0.36)
+    _modal_border(frame, x1, y1, x2, y2, tick)
 
     title = "GAME OVER"
-    subtitle = "Press R to restart"
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), _ = cv2.getTextSize(title, _FONT, 1.85, 4)
+    tx = (w - tw) // 2
+    ty = y1 + int(box_h * 0.28)
+    _shadow_text(frame, title, tx, ty, 1.85, 4, UI["title"])
 
+    scores = f"Score {score}  |  Best {best_score}"
+    (sw, sh), _ = cv2.getTextSize(scores, _FONT, 0.72, 2)
     cv2.putText(
         frame,
-        title,
-        (x1 + 20, y1 + 60),
-        font,
-        2.0,
-        (255, 255, 255),
-        5
+        scores,
+        ((w - sw) // 2, ty + th + 18),
+        _FONT,
+        0.72,
+        UI["subtitle"],
+        2,
+        cv2.LINE_AA,
     )
+
+    subtitle = "Press R to restart"
+    (sw2, sh2), _ = cv2.getTextSize(subtitle, _FONT, 0.88, 2)
     cv2.putText(
         frame,
         subtitle,
-        (x1 + 20, y1 + 115),
-        font,
-        0.95,
-        (220, 220, 220),
-        3
+        ((w - sw2) // 2, ty + th + 18 + sh + 20),
+        _FONT,
+        0.88,
+        UI["subtitle"],
+        2,
+        cv2.LINE_AA,
     )
 
 
 def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
     """
-    Center card: explain both hands required, live hand count, steady progress when 2 hands visible.
+    Same modal card + progress bar language as loading / game over.
     """
     h, w = frame.shape[:2]
     bw = int(min(w * 0.68, 720))
@@ -297,31 +401,23 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
     y1 = (h - bh) // 2
     x2, y2 = x1 + bw, y1 + bh
 
-    roi = frame[y1:y2, x1:x2].copy()
-    card = np.full((bh, bw, 3), (44, 40, 56), dtype=np.uint8)
-    blended = cv2.addWeighted(roi, 0.38, card, 0.62, 0)
-    frame[y1:y2, x1:x2] = blended
+    _modal_blend_card(frame, x1, y1, x2, y2, cam_weight=0.38)
+    _modal_border(frame, x1, y1, x2, y2, tick)
 
-    pulse = 0.5 + 0.5 * math.sin(tick * 0.12)
-    edge = _lerp_bgr((90, 85, 110), (255, 210, 100), 0.35 + 0.25 * pulse)
-    cv2.rectangle(frame, (x1, y1), (x2 - 1, y2 - 1), edge, 2, cv2.LINE_AA)
-
-    font = cv2.FONT_HERSHEY_SIMPLEX
     title = "Show both hands to start"
     sub = "Hold them in front of the camera — cyan rings appear when we track each hand."
 
-    (tw, th), _ = cv2.getTextSize(title, font, 0.95, 2)
+    (tw, th), _ = cv2.getTextSize(title, _FONT, 0.95, 2)
     tx = (w - tw) // 2
     ty = y1 + int(bh * 0.20)
-    cv2.putText(frame, title, (tx + 2, ty + 2), font, 0.95, (10, 8, 14), 2, cv2.LINE_AA)
-    cv2.putText(frame, title, (tx, ty), font, 0.95, (220, 245, 255), 2, cv2.LINE_AA)
+    _shadow_text(frame, title, tx, ty, 0.95, 2, UI["title"])
 
     sub_scale = 0.52
     lines = []
     acc = ""
     for word in sub.split():
         test = (acc + " " + word).strip()
-        (sw, _), _ = cv2.getTextSize(test, font, sub_scale, 1)
+        (sw, _), _ = cv2.getTextSize(test, _FONT, sub_scale, 1)
         if sw > bw - 36 and acc:
             lines.append(acc)
             acc = word
@@ -332,14 +428,14 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
 
     ly = ty + th + 18
     for line in lines[:3]:
-        (lw, lh), _ = cv2.getTextSize(line, font, sub_scale, 1)
+        (lw, lh), _ = cv2.getTextSize(line, _FONT, sub_scale, 1)
         cv2.putText(
             frame,
             line,
             ((w - lw) // 2, ly),
-            font,
+            _FONT,
             sub_scale,
-            (185, 195, 215),
+            UI["subtitle"],
             1,
             cv2.LINE_AA,
         )
@@ -352,75 +448,81 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
         hx = cx - gap // 2 - 22 + i * gap
         hy = base_y
         ok = num_hands > i
-        fill = (60, 200, 255) if ok else (55, 52, 62)
-        ring = (200, 230, 255) if ok else (95, 100, 115)
+        fill = UI["hand_ok"] if ok else UI["hand_idle"]
+        ring = UI["hand_ring_ok"] if ok else UI["hand_ring_idle"]
         cv2.circle(frame, (hx, hy), 22, fill, -1, cv2.LINE_AA)
         cv2.circle(frame, (hx, hy), 22, ring, 2, cv2.LINE_AA)
         label = f"{i + 1}"
-        (lw, lh), _ = cv2.getTextSize(label, font, 0.55, 1)
+        (lw, lh), _ = cv2.getTextSize(label, _FONT, 0.55, 1)
         cv2.putText(
             frame,
             label,
             (hx - lw // 2, hy + lh // 2),
-            font,
+            _FONT,
             0.55,
-            (20, 22, 28) if ok else (180, 185, 195),
+            UI["title_sh"] if ok else UI["hint"],
             1,
             cv2.LINE_AA,
         )
 
     status = f"{min(num_hands, 2)} / 2 hands visible"
-    (uw, uh), _ = cv2.getTextSize(status, font, 0.62, 2)
+    (uw, uh), _ = cv2.getTextSize(status, _FONT, 0.62, 2)
+    st_col = _lerp_bgr(UI["subtitle"], UI["ok"], 0.55) if num_hands >= 2 else UI["subtitle"]
     cv2.putText(
         frame,
         status,
         ((w - uw) // 2, base_y + 42),
-        font,
+        _FONT,
         0.62,
-        (160, 230, 180) if num_hands >= 2 else (200, 200, 210),
+        st_col,
         2,
         cv2.LINE_AA,
     )
 
     if num_hands >= 2 and steady_need > 0:
         bar_w = bw - 48
-        bar_h = 8
+        bar_h = 10
         bx = (w - bar_w) // 2
-        by = y2 - 28
-        cv2.rectangle(frame, (bx, by), (bx + bar_w, by + bar_h), (40, 38, 50), -1)
-        fill_w = int(bar_w * min(1.0, steady_count / float(steady_need)))
-        if fill_w > 2:
-            cv2.rectangle(frame, (bx + 2, by + 2), (bx + fill_w - 2, by + bar_h - 2), (80, 200, 120), -1)
+        by = y2 - 30
+        fill_t = steady_count / float(steady_need)
+        _progress_bar(frame, bx, by, bar_w, bar_h, tick, fill_t=fill_t)
         cv2.putText(
             frame,
             "Hold steady…",
             (bx, by - 8),
-            font,
+            _FONT,
             0.5,
-            (170, 180, 200),
+            UI["hint"],
             1,
             cv2.LINE_AA,
         )
 
 
-def draw_instructions(frame, game):
+def draw_instructions(frame, game, tick=0):
     h, w, _ = frame.shape
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.58
-    thick = 2
-    col = (230, 230, 230)
-    cv2.putText(frame, "Pop colored balls for score", (20, h - 42), font, scale, col, thick)
+    y1 = h - 34
+    y2 = h - 12
+    _outlined_text(
+        frame,
+        "Pop colored balls for score",
+        18,
+        y1,
+        0.52,
+        1,
+        (232, 236, 245),
+    )
     if game.lives_left >= game.lives_max:
         line2 = "Green + life pickups unlock after you lose a heart"
     else:
         line2 = "Green + = +1 life (missing it is OK)"
-    s2 = scale
+    s2 = 0.52
+    thick = 1
     for _ in range(12):
-        (tw2, _), _ = cv2.getTextSize(line2, font, s2, thick)
-        if tw2 <= w - 36:
+        (tw2, _), _ = cv2.getTextSize(line2, _FONT, s2, thick)
+        if tw2 <= w - 32:
             break
-        s2 = max(0.42, s2 - 0.04)
-    cv2.putText(frame, line2, (20, h - 18), font, s2, col, thick)
+        s2 = max(0.4, s2 - 0.035)
+    _outlined_text(frame, line2, 18, y2, s2, thick, (210, 218, 232))
 
 
 def render(
@@ -433,7 +535,7 @@ def render(
     pregame_steady_need=18,
     ui_tick=0,
 ):
-    _draw_top_banner(frame, "HAND POP!")
+    _draw_top_banner(frame, "", ui_tick)
     draw_hands(frame, hands)
 
     if not game_active:
@@ -448,11 +550,14 @@ def render(
 
     draw_balls(frame, game.balls, game.frame_count)
     draw_confetti(frame, game.confetti_particles)
-    draw_score(frame, game.score)
+    draw_score(frame, game.score, game.best_score)
     draw_combo(frame, game.combo, game.multiplier)
     draw_lives(frame, game.lives_left, game.lives_max)
+    draw_floating_texts(frame, game.floating_texts)
+    draw_combo_milestone(frame, game.combo_milestone)
+    draw_countdown(frame, game.countdown_frames, ui_tick)
 
     if game.game_over:
-        draw_game_over(frame)
+        draw_game_over(frame, game.score, game.best_score, ui_tick)
     else:
-        draw_instructions(frame, game)
+        draw_instructions(frame, game, ui_tick)
