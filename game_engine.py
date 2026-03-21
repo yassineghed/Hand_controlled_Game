@@ -71,6 +71,10 @@ class GameEngine:
         self.combo_milestone = None
         self.juice_rim_frames = 0
         self.quiet_frames = 0
+        self.hit_stop_frames = 0
+        self.shake_frames = 0
+        self.shake_strength = 0.0
+        self.pending_audio_events = []
 
     def start_countdown(self, frames=72):
         self.countdown_frames = frames
@@ -89,6 +93,10 @@ class GameEngine:
         self.combo_milestone = None
         self.juice_rim_frames = 0
         self.quiet_frames = 0
+        self.hit_stop_frames = 0
+        self.shake_frames = 0
+        self.shake_strength = 0.0
+        self.pending_audio_events = []
 
 
     def difficulty(self):
@@ -111,20 +119,31 @@ class GameEngine:
         )
         self.balls.append(ball)
 
-    def spawn_confetti(self, x, y, multiplier, color, burst_mult=1.0):
+    def _emit_audio(self, name):
+        self.pending_audio_events.append(str(name))
+        if len(self.pending_audio_events) > 32:
+            self.pending_audio_events = self.pending_audio_events[-32:]
+
+    def spawn_confetti(self, x, y, multiplier, color, burst_mult=1.0, preset="normal"):
         # Create a small burst of particles at (x, y).
         # Particle count scales lightly with multiplier.
+        profile = {
+            "normal": {"speed": (1.4, 4.6), "life": (12, 20), "size": (2, 4)},
+            "combo": {"speed": (2.2, 6.2), "life": (16, 28), "size": (2, 5)},
+            "health": {"speed": (1.1, 3.8), "life": (14, 24), "size": (2, 4)},
+            "miss": {"speed": (1.0, 2.6), "life": (10, 16), "size": (1, 3)},
+        }.get(preset, {"speed": (1.4, 4.6), "life": (12, 20), "size": (2, 4)})
         n = int((10 + min(25, multiplier * 6)) * burst_mult)
         # Same color as the ball; particles share it and fade via draw_confetti.
         burst_color = color
 
         for _ in range(n):
             angle = random.uniform(0, math.pi * 2)
-            speed = random.uniform(1.5, 5.0) * (0.85 + 0.15 * multiplier)
+            speed = random.uniform(*profile["speed"]) * (0.85 + 0.15 * multiplier)
             vx = math.cos(angle) * speed
             vy = math.sin(angle) * speed - random.uniform(0.5, 2.5)
-            life = random.randint(12, 22)
-            size = random.randint(2, 5)
+            life = random.randint(*profile["life"])
+            size = random.randint(*profile["size"])
             self.confetti_particles.append({
                 "x": float(x),
                 "y": float(y),
@@ -178,6 +197,11 @@ class GameEngine:
             self.juice_rim_frames -= 1
         if self.quiet_frames > 0:
             self.quiet_frames -= 1
+        if self.shake_frames > 0:
+            self.shake_frames -= 1
+        if self.hit_stop_frames > 0:
+            self.hit_stop_frames -= 1
+            return
 
         if self.countdown_frames > 0:
             self.countdown_frames -= 1
@@ -267,6 +291,9 @@ class GameEngine:
                         self.lives_left = min(self.lives_max, self.lives_left + 1)
                         self.juice_rim_frames = max(self.juice_rim_frames, 14)
                         self.quiet_frames = max(self.quiet_frames, 36)
+                        self.shake_frames = max(self.shake_frames, 6)
+                        self.shake_strength = max(self.shake_strength, 1.4)
+                        self._emit_audio("health")
                         self.floating_texts.append({
                             "text": "LIFE!",
                             "x": float(ball.x),
@@ -300,16 +327,24 @@ class GameEngine:
                             self.combo_milestone = {"frames": 52, "multiplier": self.multiplier}
                             self.juice_rim_frames = max(self.juice_rim_frames, 22)
                             self.quiet_frames = max(self.quiet_frames, 20)
+                            self.hit_stop_frames = max(self.hit_stop_frames, 2)
+                            self.shake_frames = max(self.shake_frames, 10)
+                            self.shake_strength = max(self.shake_strength, 3.2)
+                            self._emit_audio("combo_up")
                             self.spawn_confetti(
                                 ball.x,
                                 ball.y,
                                 self.multiplier + 2,
                                 (100, 210, 255),
                                 burst_mult=1.55,
+                                preset="combo",
                             )
+                        else:
+                            self._emit_audio("pop")
                         if self.score > old_best:
                             self.juice_rim_frames = max(self.juice_rim_frames, 30)
                             self.quiet_frames = max(self.quiet_frames, 44)
+                            self._emit_audio("new_best")
                             self.floating_texts.append({
                                 "text": "NEW BEST!",
                                 "x": float(self.width) * 0.5,
@@ -321,7 +356,13 @@ class GameEngine:
                                 "color": (180, 255, 255),
                                 "scale": 0.62,
                             })
-                    self.spawn_confetti(ball.x, ball.y, self.multiplier, ball.color)
+                    self.spawn_confetti(
+                        ball.x,
+                        ball.y,
+                        self.multiplier,
+                        ball.color,
+                        preset="health" if ball.is_health_ball else "normal",
+                    )
                     hit = True
                     break
 
@@ -372,6 +413,11 @@ class GameEngine:
                 if self.lives_left <= 0:
                     self.game_over = True
                     _save_best_score(self.best_score)
+                    self._emit_audio("game_over")
+                else:
+                    self._emit_audio("miss")
+                self.shake_frames = max(self.shake_frames, 8)
+                self.shake_strength = max(self.shake_strength, 2.6)
                 removed_any = True
             else:
                 # Keep the ball around until it has had time to "exist"

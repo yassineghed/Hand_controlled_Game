@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from audio_system import SoundManager
 from game_engine import GameEngine
 import renderer
 
@@ -111,6 +112,7 @@ def main():
 
         tracker = load_state["tracker"]
         game = GameEngine(width, height)
+        sound = SoundManager()
 
         STEADY_HAND_FRAMES = 20
         game_active = False
@@ -153,7 +155,21 @@ def main():
                 )
             else:
                 game.update(hands)
+                while game.pending_audio_events:
+                    sound.play(game.pending_audio_events.pop(0))
                 renderer.render(frame, game, hands, game_active=True, ui_tick=ui_tick)
+                if game.shake_frames > 0 and game.shake_strength > 0.0:
+                    amp = game.shake_strength * (game.shake_frames / 10.0)
+                    dx = int(np.random.uniform(-amp, amp))
+                    dy = int(np.random.uniform(-amp, amp))
+                    m = np.float32([[1, 0, dx], [0, 1, dy]])
+                    frame = cv2.warpAffine(
+                        frame,
+                        m,
+                        (frame.shape[1], frame.shape[0]),
+                        flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_REFLECT,
+                    )
 
             cv2.imshow("Hand Game", frame)
             ui_tick += 1

@@ -5,6 +5,9 @@ import numpy as np
 
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
+T_UI_FAST = 12
+T_UI_MEDIUM = 26
+T_UI_LONG = 52
 
 # --- Unified UI (BGR): same “night arcade” family everywhere ---
 UI = {
@@ -294,10 +297,10 @@ def draw_floating_texts(frame, texts, max_items=6):
 
 
 def draw_countdown(frame, countdown_frames, tick=0):
-    total = 72
+    total = T_UI_LONG + T_UI_MEDIUM - 6
     if countdown_frames <= 0 or total <= 0:
         return
-    phase = (total - countdown_frames) // 18
+    phase = (total - countdown_frames) // T_UI_MEDIUM
     if phase == 0:
         label = "3"
     elif phase == 1:
@@ -322,7 +325,7 @@ def draw_combo_milestone(frame, combo_milestone):
         return
     m = combo_milestone.get("multiplier", 1)
     f = combo_milestone.get("frames", 0)
-    alpha = _ease_out_cubic(min(1.0, f / 18.0))
+    alpha = _ease_out_cubic(min(1.0, f / float(T_UI_MEDIUM)))
     h, w, _ = frame.shape
     text = f"COMBO x{m}!"
     scale = 0.95
@@ -340,7 +343,7 @@ def draw_juice_rim(frame, frames_left, tick):
         return
     h, w, _ = frame.shape
     pulse = 0.55 + 0.45 * math.sin(tick * 0.22)
-    strength = _ease_out_cubic(min(1.0, frames_left / 26.0))
+    strength = _ease_out_cubic(min(1.0, frames_left / float(T_UI_MEDIUM)))
     thick = max(2, int(2 + 4 * strength * pulse))
     glow = _lerp_bgr((60, 140, 220), (120, 230, 255), pulse)
     cv2.rectangle(frame, (0, 0), (w - 1, h - 1), glow, thick, cv2.LINE_AA)
