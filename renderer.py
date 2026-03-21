@@ -120,6 +120,11 @@ def _lerp_bgr(a, b, t):
     )
 
 
+def _ease_out_cubic(t):
+    t = max(0.0, min(1.0, t))
+    return 1.0 - pow(1.0 - t, 3)
+
+
 def draw_loading_screen(camera_bgr, tick):
     """
     Same gradient language as in-game banner + modals; full-screen over camera.
@@ -271,12 +276,15 @@ def draw_combo(frame, combo, multiplier):
     _outlined_text(frame, text, x, y, scale, thickness, (200, 230, 255))
 
 
-def draw_floating_texts(frame, texts):
+def draw_floating_texts(frame, texts, max_items=6):
+    if max_items > 0:
+        texts = texts[-max_items:]
     for t in texts:
         cx, y = t["x"], int(t["y"])
         life = t.get("life", 0)
         max_life = t.get("max_life", 1)
-        alpha = max(0.35, life / max(max_life, 1))
+        t_norm = life / max(max_life, 1)
+        alpha = 0.22 + 0.78 * _ease_out_cubic(t_norm)
         scale = t.get("scale", 0.9)
         thick = max(1, int(scale * 2))
         col = tuple(int(c * alpha) for c in t.get("color", (255, 255, 255)))
@@ -314,7 +322,7 @@ def draw_combo_milestone(frame, combo_milestone):
         return
     m = combo_milestone.get("multiplier", 1)
     f = combo_milestone.get("frames", 0)
-    alpha = min(1.0, f / 14.0)
+    alpha = _ease_out_cubic(min(1.0, f / 18.0))
     h, w, _ = frame.shape
     text = f"COMBO x{m}!"
     scale = 0.95
@@ -332,7 +340,8 @@ def draw_juice_rim(frame, frames_left, tick):
         return
     h, w, _ = frame.shape
     pulse = 0.55 + 0.45 * math.sin(tick * 0.22)
-    thick = max(2, int(3 + 5 * (frames_left / 22.0) * pulse))
+    strength = _ease_out_cubic(min(1.0, frames_left / 26.0))
+    thick = max(2, int(2 + 4 * strength * pulse))
     glow = _lerp_bgr((60, 140, 220), (120, 230, 255), pulse)
     cv2.rectangle(frame, (0, 0), (w - 1, h - 1), glow, thick, cv2.LINE_AA)
 
@@ -348,7 +357,7 @@ def draw_hot_streak(frame, combo, tick):
     x = (w - tw) // 2
     y = 70
     flicker = 0.85 + 0.15 * math.sin(tick * 0.25)
-    col = (int(200 * flicker), int(220 * flicker), int(255 * flicker))
+    col = (int(120 * flicker), int(200 * flicker), int(255 * flicker))
     _outlined_text(frame, msg, x, y, scale, thick, col)
 
 
@@ -588,19 +597,30 @@ def render(
         )
         return
 
+    countdown_on = game.countdown_frames > 0
+    milestone_on = game.combo_milestone is not None and game.combo_milestone.get("frames", 0) > 0
+    quiet_on = getattr(game, "quiet_frames", 0) > 0
+
     draw_balls(frame, game.balls, game.frame_count)
     draw_confetti(frame, game.confetti_particles)
     draw_score(frame, game.score, game.best_score)
-    draw_combo(frame, game.combo, game.multiplier)
     draw_lives(frame, game.lives_left, game.lives_max)
-    draw_floating_texts(frame, game.floating_texts)
-    draw_combo_milestone(frame, game.combo_milestone)
-    draw_countdown(frame, game.countdown_frames, ui_tick)
-    draw_chasing_best(frame, game.score, game.best_score)
-    draw_hot_streak(frame, game.combo, ui_tick)
-    draw_juice_rim(frame, game.juice_rim_frames, ui_tick)
+    draw_floating_texts(frame, game.floating_texts, max_items=2 if quiet_on else 6)
+
+    if countdown_on:
+        draw_countdown(frame, game.countdown_frames, ui_tick)
+    else:
+        draw_combo(frame, game.combo, game.multiplier)
+        if milestone_on:
+            draw_combo_milestone(frame, game.combo_milestone)
+        elif not quiet_on:
+            draw_chasing_best(frame, game.score, game.best_score)
+            draw_hot_streak(frame, game.combo, ui_tick)
+
+    if game.juice_rim_frames > 0 and not countdown_on and not quiet_on:
+        draw_juice_rim(frame, game.juice_rim_frames, ui_tick)
 
     if game.game_over:
         draw_game_over(frame, game.score, game.best_score, ui_tick)
-    else:
+    elif not countdown_on and not quiet_on:
         draw_instructions(frame, game, ui_tick)

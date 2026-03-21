@@ -70,6 +70,7 @@ class GameEngine:
         self.floating_texts = []
         self.combo_milestone = None
         self.juice_rim_frames = 0
+        self.quiet_frames = 0
 
     def start_countdown(self, frames=72):
         self.countdown_frames = frames
@@ -87,6 +88,7 @@ class GameEngine:
         self.floating_texts = []
         self.combo_milestone = None
         self.juice_rim_frames = 0
+        self.quiet_frames = 0
 
 
     def difficulty(self):
@@ -174,6 +176,8 @@ class GameEngine:
 
         if self.juice_rim_frames > 0:
             self.juice_rim_frames -= 1
+        if self.quiet_frames > 0:
+            self.quiet_frames -= 1
 
         if self.countdown_frames > 0:
             self.countdown_frames -= 1
@@ -262,6 +266,7 @@ class GameEngine:
                     if ball.is_health_ball:
                         self.lives_left = min(self.lives_max, self.lives_left + 1)
                         self.juice_rim_frames = max(self.juice_rim_frames, 14)
+                        self.quiet_frames = max(self.quiet_frames, 36)
                         self.floating_texts.append({
                             "text": "LIFE!",
                             "x": float(ball.x),
@@ -294,6 +299,7 @@ class GameEngine:
                         if self.multiplier > old_mult:
                             self.combo_milestone = {"frames": 52, "multiplier": self.multiplier}
                             self.juice_rim_frames = max(self.juice_rim_frames, 22)
+                            self.quiet_frames = max(self.quiet_frames, 20)
                             self.spawn_confetti(
                                 ball.x,
                                 ball.y,
@@ -303,6 +309,7 @@ class GameEngine:
                             )
                         if self.score > old_best:
                             self.juice_rim_frames = max(self.juice_rim_frames, 30)
+                            self.quiet_frames = max(self.quiet_frames, 44)
                             self.floating_texts.append({
                                 "text": "NEW BEST!",
                                 "x": float(self.width) * 0.5,
