@@ -1,5 +1,23 @@
 import random
 
+# BGR — pastel score targets (softer, desaturated).
+BALL_COLORS = [
+    (180, 230, 255),   # pastel yellow
+    (220, 230, 200),   # pastel cyan
+    (180, 210, 255),   # pastel peach
+    (230, 200, 240),   # pastel pink
+    (240, 220, 200),   # pastel blue
+    (200, 200, 255),   # pastel coral
+    (210, 220, 235),   # pastel lavender
+    (200, 240, 230),   # pastel mint
+    (225, 210, 230),   # pastel orchid
+]
+
+
+# BGR — distinct green for health balls (restore +1 life when popped).
+HEALTH_BALL_COLOR = (0, 220, 0)
+
+
 class Ball:
     def __init__(
         self,
@@ -9,8 +27,11 @@ class Ball:
         spawn_time=0.0,
         min_visible_seconds=3 / 5,
         min_travel_fraction=0.15,
+        is_health_ball=False,
     ):
-        self.radius = random.randint(20, 35)
+        self.is_health_ball = bool(is_health_ball)
+        self.radius = random.randint(34, 48) if self.is_health_ball else random.randint(20, 35)
+        self.color = HEALTH_BALL_COLOR if self.is_health_ball else random.choice(BALL_COLORS)
 
         difficulty = max(0.5, float(difficulty))
 

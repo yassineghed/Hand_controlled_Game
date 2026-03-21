@@ -53,6 +53,7 @@ class GameEngine:
 
 
     def spawn_ball(self):
+        is_health = random.random() < 0.15
         ball = Ball(
             self.width,
             self.height,
@@ -60,23 +61,16 @@ class GameEngine:
             spawn_time=time.perf_counter(),
             min_visible_seconds=self.min_ball_visible_seconds,
             min_travel_fraction=self.min_ball_travel_fraction,
+            is_health_ball=is_health,
         )
         self.balls.append(ball)
 
-    def spawn_confetti(self, x, y, multiplier):
+    def spawn_confetti(self, x, y, multiplier, color):
         # Create a small burst of particles at (x, y).
         # Particle count scales lightly with multiplier.
         n = int(10 + min(25, multiplier * 6))
-        colors = [
-            (0, 255, 255),   # yellow/cyan-ish in BGR
-            (255, 255, 0),   # blue? (BGR)
-            (0, 255, 0),     # green
-            (0, 165, 255),   # orange
-            (255, 0, 255),   # pink/magenta
-            (255, 0, 0),     # blue
-            (255, 255, 255), # white
-            (0, 0, 255),     # red
-        ]
+        # Same color as the ball; particles share it and fade via draw_confetti.
+        burst_color = color
 
         for _ in range(n):
             angle = random.uniform(0, math.pi * 2)
@@ -92,7 +86,7 @@ class GameEngine:
                 "vy": vy,
                 "life": life,
                 "max_life": life,
-                "color": random.choice(colors),
+                "color": burst_color,
                 "size": size,
             })
 
@@ -128,12 +122,56 @@ class GameEngine:
             self.spawn_ball()
             self.spawn_timer = 0
 
+        now = time.perf_counter()
         for ball in self.balls:
             ball.update()
+            self._apply_fairness_bounce(ball, now)
 
         self.check_collisions(hands)
 
         self.remove_offscreen_balls()
+
+    def _ball_is_fair(self, ball, now):
+        """True when age + travel rules allow the ball to leave / count as a miss."""
+        min_travel_pixels = self.min_ball_travel_fraction * float(
+            max(self.width, self.height)
+        )
+        age_ok = ball.age_seconds(now) >= self.min_ball_visible_seconds
+        travel_ok = (
+            math.hypot(ball.x - ball.start_x, ball.y - ball.start_y)
+            >= min_travel_pixels
+        )
+        return age_ok and travel_ok
+
+    def _apply_fairness_bounce(self, ball, now):
+        """
+        While the ball is still in its 'unfair' window, keep it inside the
+        extended play rect (same bounds used for off-screen checks) by
+        clamping position and reflecting velocity — so it doesn't sit
+        invisibly off-screen until the timer expires.
+        """
+        if self._ball_is_fair(ball, now):
+            return
+
+        r = float(ball.radius)
+        min_x, max_x = -r, self.width + r
+        min_y, max_y = -r, self.height + r
+        eps = 2.0
+        damp = 0.92
+
+        if ball.x < min_x:
+            ball.x = min_x + eps
+            ball.vx = abs(ball.vx) * damp
+        elif ball.x > max_x:
+            ball.x = max_x - eps
+            ball.vx = -abs(ball.vx) * damp
+
+        if ball.y < min_y:
+            ball.y = min_y + eps
+            ball.vy = abs(ball.vy) * damp
+        elif ball.y > max_y:
+            ball.y = max_y - eps
+            ball.vy = -abs(ball.vy) * damp
 
 
     def check_collisions(self, hands):
@@ -152,11 +190,13 @@ class GameEngine:
                 dist = math.sqrt(dx*dx + dy*dy)
 
                 if dist < ball.radius + hand["radius"]:
-                    self.combo += 1
-                    # Every 5 consecutive hits increases the multiplier.
-                    self.multiplier = 1 + (self.combo // 5)
-                    self.score += self.multiplier
-                    self.spawn_confetti(ball.x, ball.y, self.multiplier)
+                    if ball.is_health_ball:
+                        self.lives_left = min(self.lives_max, self.lives_left + 1)
+                    else:
+                        self.combo += 1
+                        self.multiplier = 1 + (self.combo // 5)
+                        self.score += self.multiplier
+                    self.spawn_confetti(ball.x, ball.y, self.multiplier, ball.color)
                     hit = True
                     break
 
@@ -172,7 +212,6 @@ class GameEngine:
         removed_any = False
 
         now = time.perf_counter()
-        min_travel_pixels = self.min_ball_travel_fraction * float(max(self.width, self.height))
 
         for ball in self.balls:
 
@@ -187,11 +226,12 @@ class GameEngine:
                 remaining.append(ball)
                 continue
 
-            # Fairness: don't immediately penalize for balls that are just spawned.
-            age_ok = ball.age_seconds(now) >= self.min_ball_visible_seconds
-            travel_ok = math.hypot(ball.x - ball.start_x, ball.y - ball.start_y) >= min_travel_pixels
+            # Health balls are optional bonus; missing them doesn't cost a life.
+            if ball.is_health_ball:
+                continue
 
-            if age_ok and travel_ok:
+            # Fairness: don't immediately penalize for balls that are just spawned.
+            if self._ball_is_fair(ball, now):
                 self.lives_left -= 1
                 if self.lives_left <= 0:
                     self.game_over = True
