@@ -53,7 +53,9 @@ class GameEngine:
 
 
     def spawn_ball(self):
-        is_health = random.random() < 0.15
+        # Health pickups only after at least one heart lost (still at full lives = no + balls).
+        can_health = self.lives_left < self.lives_max
+        is_health = can_health and random.random() < 0.15
         ball = Ball(
             self.width,
             self.height,

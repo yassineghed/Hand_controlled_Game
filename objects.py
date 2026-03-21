@@ -1,21 +1,45 @@
 import random
 
-# BGR — pastel score targets (softer, desaturated).
-BALL_COLORS = [
-    (180, 230, 255),   # pastel yellow
-    (220, 230, 200),   # pastel cyan
-    (180, 210, 255),   # pastel peach
-    (230, 200, 240),   # pastel pink
-    (240, 220, 200),   # pastel blue
-    (200, 200, 255),   # pastel coral
-    (210, 220, 235),   # pastel lavender
-    (200, 240, 230),   # pastel mint
-    (225, 210, 230),   # pastel orchid
+import cv2
+import numpy as np
+
+
+def _bgr_scale_saturation(bgr, sat_scale):
+    """OpenCV HSV: S channel 0–255. sat_scale 1.2 = +20% saturation."""
+    pixel = np.uint8([[bgr]])
+    hsv = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[0, 0, 1] = np.clip(hsv[0, 0, 1] * sat_scale, 0, 255)
+    out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)[0, 0]
+    return tuple(int(c) for c in out)
+
+
+def _bgr_more_pastel(bgr, sat_scale=0.8, white_blend=0.12):
+    """~20% softer: lower saturation by 20%, slight white blend (health pickup)."""
+    pixel = np.uint8([[bgr]])
+    hsv = cv2.cvtColor(pixel, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[0, 0, 1] = np.clip(hsv[0, 0, 1] * sat_scale, 0, 255)
+    mid = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32)[0, 0]
+    w = np.array([255.0, 255.0, 255.0], dtype=np.float32)
+    out = mid * (1.0 - white_blend) + w * white_blend
+    return tuple(int(np.clip(c, 0, 255)) for c in out)
+
+
+# BGR bases (pastel); +20% saturation applied for clearer targets on camera.
+_BALL_PASTEL_BASES = [
+    (180, 230, 255),
+    (220, 230, 200),
+    (180, 210, 255),
+    (230, 200, 240),
+    (240, 220, 200),
+    (200, 200, 255),
+    (210, 220, 235),
+    (200, 240, 230),
+    (225, 210, 230),
 ]
+BALL_COLORS = [_bgr_scale_saturation(c, 1.2) for c in _BALL_PASTEL_BASES]
 
-
-# BGR — distinct green for health balls (restore +1 life when popped).
-HEALTH_BALL_COLOR = (0, 220, 0)
+# Softer mint green than vivid (0, 220, 0); still reads as “life”.
+HEALTH_BALL_COLOR = _bgr_more_pastel((0, 220, 0), sat_scale=0.8, white_blend=0.12)
 
 
 class Ball:
