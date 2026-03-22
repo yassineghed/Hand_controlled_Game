@@ -27,6 +27,8 @@ UI = {
     "hand_idle": (58, 54, 64),
     "hand_ring_ok": (210, 235, 255),
     "hand_ring_idle": (92, 96, 108),
+    "hud_veil": (26, 28, 40),
+    "hud_line": (120, 200, 255),
 }
 
 # Hands — cyan / magenta (distinct from life green)
@@ -126,6 +128,30 @@ def _lerp_bgr(a, b, t):
 def _ease_out_cubic(t):
     t = max(0.0, min(1.0, t))
     return 1.0 - pow(1.0 - t, 3)
+
+
+def _top_veil(frame, strip_h, alpha=0.34):
+    """Darken top band so HUD text reads on busy camera feed."""
+    h, w = frame.shape[:2]
+    strip_h = max(0, min(int(strip_h), h))
+    if strip_h <= 0:
+        return
+    roi = frame[0:strip_h, 0:w]
+    veil = np.full_like(roi, UI["hud_veil"], dtype=np.uint8)
+    blended = cv2.addWeighted(roi, 1.0 - alpha, veil, alpha, 0)
+    frame[0:strip_h, 0:w] = blended
+
+
+def _text_right(frame, text, right_x, y, scale, thick, fill, outline=None):
+    (tw, _), _ = cv2.getTextSize(text, _FONT, scale, thick)
+    _outlined_text(frame, text, int(right_x - tw), y, scale, thick, fill, outline)
+
+
+def _truncate(s, max_chars):
+    s = str(s)
+    if len(s) <= max_chars:
+        return s
+    return s[: max(0, max_chars - 1)] + "…"
 
 
 def draw_loading_screen(camera_bgr, tick):
@@ -254,80 +280,170 @@ def draw_confetti(frame, particles):
         cv2.circle(frame, (x, y), size, faded_color, -1)
 
 
-def draw_score(frame, score, best_score):
+def _draw_lives_row(frame, lives_left, lives_max, center_y):
     h, w, _ = frame.shape
-    scale = 0.55
-    thickness = 1
-    s_text = f"Score {score}"
-    b_text = f"Best {best_score}"
-    (sw, _), _ = cv2.getTextSize(s_text, _FONT, scale, thickness)
-    (bw, _), _ = cv2.getTextSize(b_text, _FONT, scale, thickness)
-    _outlined_text(frame, s_text, 10, 26, scale, thickness, (252, 252, 255))
-    _outlined_text(frame, b_text, w - bw - 10, 26, scale, thickness, (195, 215, 245))
+    spacing = 18
+    r = 6
+    total_w = (lives_max - 1) * spacing
+    x0 = (w - total_w) // 2
+
+    if lives_left >= 4:
+        on_color = (72, 210, 130)
+    elif lives_left >= 2:
+        on_color = (255, 200, 90)
+    else:
+        on_color = (80, 80, 255)
+    off_color = (52, 50, 58)
+
+    for i in range(lives_max):
+        cx = x0 + i * spacing
+        color = on_color if i < lives_left else off_color
+        cv2.circle(frame, (cx, center_y), r, color, -1, cv2.LINE_AA)
+        cv2.circle(frame, (cx, center_y), r, (28, 26, 34), 1, cv2.LINE_AA)
 
 
-def draw_progression(frame, level, stage_name, xp, xp_next, coins):
-    h, w, _ = frame.shape
-    _outlined_text(frame, f"Lv {level} · {stage_name}", 10, 48, 0.42, 1, (195, 220, 255))
-    _outlined_text(frame, f"{coins}c", w - 54, 48, 0.42, 1, (255, 230, 150))
-    bw = 120
-    bh = 6
-    bx = 10
-    by = 54
-    t = 0.0 if xp_next <= 0 else max(0.0, min(1.0, xp / float(xp_next)))
-    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (34, 36, 52), -1)
-    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (88, 98, 125), 1)
-    fw = int((bw - 2) * t)
-    if fw > 0:
-        cv2.rectangle(frame, (bx + 1, by + 1), (bx + 1 + fw, by + bh - 1), (120, 210, 255), -1)
+def _draw_thin_bar(frame, bx, by, bw, bh, fill_t, fill_col, track_col=None, rim_col=None):
+    track_col = track_col or UI["track"]
+    rim_col = rim_col or UI["track_rim"]
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), track_col, -1)
+    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), rim_col, 1, cv2.LINE_AA)
+    inner_h = max(1, bh - 4)
+    fw = int((bw - 4) * max(0.0, min(1.0, fill_t)))
+    if fw > 2:
+        cv2.rectangle(
+            frame,
+            (bx + 2, by + 2),
+            (bx + 2 + fw, by + 2 + inner_h),
+            fill_col,
+            -1,
+        )
 
 
-def draw_missions(frame, missions):
-    if not missions:
+def draw_unified_hud(frame, game, *, ui_tick, quiet_on, countdown_on, milestone_on):
+    """
+    Single top layout: score (left), lives + run progress (center), profile + missions (right).
+    Avoids stacking everything in one corner and overlapping combo/lives.
+    """
+    if getattr(game, "game_over", False):
         return
-    y = 72
-    for m in missions[:3]:
-        done = bool(m.get("done", False))
-        text = f"[{int(m.get('progress', 0))}/{int(m.get('target', 0))}] {m.get('label', '')}"
-        col = (130, 230, 170) if done else (185, 195, 220)
-        _outlined_text(frame, text, 10, y, 0.38, 1, col)
-        y += 18
-    _outlined_text(frame, "Press M to reroll missions", 10, y + 4, 0.33, 1, (145, 165, 190))
 
-
-def draw_level_flow(frame, play_level, missions, transition_pending, transition_frames):
     h, w, _ = frame.shape
+    missions = game.missions or []
+    has_missions = len(missions) > 0
+    strip_h = 102 if has_missions else 86
+    _top_veil(frame, strip_h, 0.32)
+
+    margin = 16
+    right_x = w - margin
+
+    # --- Left: score + best (+ chase hint) ---
+    score_txt = f"{int(game.score):,}" if game.score >= 1000 else str(int(game.score))
+    _outlined_text(frame, score_txt, margin, 30, 0.62, 1, UI["title"])
+    _outlined_text(frame, f"BEST {int(game.best_score)}", margin, 52, 0.34, 1, UI["subtitle"])
+    if not quiet_on and not countdown_on and not milestone_on:
+        gap = int(game.best_score) - int(game.score)
+        if int(game.best_score) > 0 and 1 <= gap <= 8:
+            chase = "1 to beat best!" if gap == 1 else f"{gap} to beat best!"
+            _outlined_text(frame, chase, margin, 72, 0.34, 1, UI["hud_line"])
+
+    # --- Center: lives, run label, mission aggregate bar, combo row ---
+    cy = 28
+    _draw_lives_row(frame, game.lives_left, game.lives_max, cy)
     done = sum(1 for m in missions if bool(m.get("done", False)))
     total = max(1, len(missions))
-    t = done / float(total)
-    label = f"Level {play_level}"
-    _outlined_text(frame, label, (w // 2) - 34, 24, 0.46, 1, (220, 230, 255))
-    bw = 120
-    bh = 6
-    bx = (w - bw) // 2
-    by = 30
-    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (34, 36, 52), -1)
-    cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (88, 98, 125), 1)
-    fw = int((bw - 2) * t)
-    if fw > 0:
-        cv2.rectangle(frame, (bx + 1, by + 1), (bx + 1 + fw, by + bh - 1), (120, 210, 255), -1)
-    if transition_pending:
-        msg = "LEVEL COMPLETE! Next level..."
-        _outlined_text(frame, msg, (w // 2) - 130, int(h * 0.18), 0.58, 2, (255, 235, 170))
-        _outlined_text(frame, "Press N to continue now", (w // 2) - 100, int(h * 0.18) + 24, 0.40, 1, (205, 215, 235))
+    t_m = done / float(total)
+    run_label = f"RUN {int(game.play_level)}"
+    sl, st = 0.36, 1
+    (rw, _), _ = cv2.getTextSize(run_label, _FONT, sl, st)
+    _outlined_text(frame, run_label, (w - rw) // 2, cy + 18, sl, st, UI["subtitle"])
+
+    bar_w = min(150, w // 4)
+    bar_h = 6
+    bx = (w - bar_w) // 2
+    by = cy + 24
+    _draw_thin_bar(frame, bx, by, bar_w, bar_h, t_m, UI["hud_line"])
+
+    if not countdown_on and int(game.multiplier) > 1:
+        ctext = f"×{int(game.multiplier)}"
+        cs, ct = 0.56, 1
+        (cw, _), _ = cv2.getTextSize(ctext, _FONT, cs, ct)
+        _outlined_text(
+            frame,
+            ctext,
+            (w - cw) // 2,
+            by + 16,
+            cs,
+            ct,
+            UI["accent"],
+        )
+        if int(game.combo) >= 10 and not quiet_on and not milestone_on:
+            flicker = 0.88 + 0.12 * math.sin(ui_tick * 0.22)
+            hs = "HOT STREAK"
+            hs_scale = 0.34
+            (hw, _), _ = cv2.getTextSize(hs, _FONT, hs_scale, 1)
+            col = (
+                int(140 * flicker),
+                int(210 * flicker),
+                int(255 * flicker),
+            )
+            _outlined_text(frame, hs, (w - hw) // 2, by + 36, hs_scale, 1, col)
+
+    # --- Right: meta level, XP, coins, missions (right-aligned) ---
+    stage_short = _truncate(game.stage_name, 12)
+    _text_right(frame, f"LV {int(game.level)} · {stage_short}", right_x, 26, 0.38, 1, UI["title"])
+    xp_next = max(1, int(getattr(game, "xp_next", 1)))
+    t_xp = max(0.0, min(1.0, float(game.xp) / float(xp_next)))
+    bar_w2 = min(118, w // 5)
+    bx2 = right_x - bar_w2
+    by2 = 40
+    _draw_thin_bar(frame, bx2, by2, bar_w2, 5, t_xp, (140, 200, 255))
+    _text_right(frame, f"{int(game.coins)} coins", right_x, by2 + 12, 0.34, 1, UI["accent"])
+
+    if has_missions:
+        my = by2 + 30
+        for m in missions[:3]:
+            done_m = bool(m.get("done", False))
+            short = _truncate(m.get("label", ""), 22)
+            line = f"{int(m.get('progress', 0))}/{int(m.get('target', 0))} {short}"
+            col = (120, 230, 175) if done_m else UI["subtitle"]
+            _text_right(frame, line, right_x, my, 0.32, 1, col)
+            my += 17
+        _text_right(frame, "[M] reroll tasks", right_x, my + 2, 0.28, 1, UI["hint"])
 
 
-def draw_combo(frame, combo, multiplier):
-    if multiplier <= 1:
+def draw_level_transition_overlay(frame, transition_pending, _transition_frames):
+    """Big message only — run progress lives in draw_unified_hud."""
+    if not transition_pending:
         return
     h, w, _ = frame.shape
-    text = f"x{multiplier}"
-    scale = 0.68
-    thickness = 1
-    (tw, _), _ = cv2.getTextSize(text, _FONT, scale, thickness)
-    x = int((w - tw) / 2)
-    y = 54
-    _outlined_text(frame, text, x, y, scale, thickness, (200, 230, 255))
+    y0 = int(h * 0.20)
+    _outlined_text(
+        frame,
+        "RUN COMPLETE",
+        (w // 2) - 118,
+        y0,
+        0.62,
+        2,
+        UI["accent"],
+    )
+    _outlined_text(
+        frame,
+        "Next run loading…",
+        (w // 2) - 108,
+        y0 + 28,
+        0.40,
+        1,
+        UI["subtitle"],
+    )
+    _outlined_text(
+        frame,
+        "[N] continue now",
+        (w // 2) - 88,
+        y0 + 50,
+        0.36,
+        1,
+        UI["hint"],
+    )
 
 
 def draw_floating_texts(frame, texts, max_items=6):
@@ -400,140 +516,86 @@ def draw_juice_rim(frame, frames_left, tick):
     cv2.rectangle(frame, (0, 0), (w - 1, h - 1), glow, thick, cv2.LINE_AA)
 
 
-def draw_hot_streak(frame, combo, tick):
-    if combo < 10:
-        return
-    h, w, _ = frame.shape
-    msg = "HOT STREAK!"
-    scale = 0.5
-    thick = 1
-    (tw, th), _ = cv2.getTextSize(msg, _FONT, scale, thick)
-    x = (w - tw) // 2
-    y = 70
-    flicker = 0.85 + 0.15 * math.sin(tick * 0.25)
-    col = (int(120 * flicker), int(200 * flicker), int(255 * flicker))
-    _outlined_text(frame, msg, x, y, scale, thick, col)
-
-
-def draw_chasing_best(frame, score, best_score):
-    if best_score <= 0 or score >= best_score:
-        return
-    gap = best_score - score
-    if gap < 1 or gap > 8:
-        return
-    msg = "1 pt to beat best!" if gap == 1 else f"{gap} pts to beat best!"
-    scale = 0.42
-    thick = 1
-    _outlined_text(frame, msg, 10, 44, scale, thick, (160, 200, 255))
-
-
-def draw_lives(frame, lives_left, lives_max):
-    h, w, _ = frame.shape
-    spacing = 16
-    r = 5
-    total_w = (lives_max - 1) * spacing
-    x0 = (w - total_w) // 2
-    y = 42
-
-    if lives_left >= 4:
-        on_color = (0, 220, 0)
-    elif lives_left >= 2:
-        on_color = (0, 220, 220)
-    else:
-        on_color = (0, 0, 255)
-    off_color = (58, 56, 62)
-
-    for i in range(lives_max):
-        cx = x0 + i * spacing
-        color = on_color if i < lives_left else off_color
-        cv2.circle(frame, (cx, y), r, color, -1)
-
-
 def draw_game_over(frame, score, best_score, summary=None, tick=0):
     h, w, _ = frame.shape
-    box_w = int(min(w * 0.62, 560))
-    box_h = 188
+    box_w = int(min(w * 0.58, 520))
+    box_h = 218 if summary else 168
     x1 = (w - box_w) // 2
     y1 = (h - box_h) // 2
     x2, y2 = x1 + box_w, y1 + box_h
 
-    _modal_blend_card(frame, x1, y1, x2, y2, cam_weight=0.36)
+    _modal_blend_card(frame, x1, y1, x2, y2, cam_weight=0.42)
     _modal_border(frame, x1, y1, x2, y2, tick)
 
     title = "GAME OVER"
-    (tw, th), _ = cv2.getTextSize(title, _FONT, 1.85, 4)
+    (tw, th), _ = cv2.getTextSize(title, _FONT, 1.72, 4)
     tx = (w - tw) // 2
-    ty = y1 + int(box_h * 0.28)
-    _shadow_text(frame, title, tx, ty, 1.85, 4, UI["title"])
+    ty = y1 + int(box_h * 0.22)
+    _shadow_text(frame, title, tx, ty, 1.72, 4, UI["title"])
 
-    scores = f"Score {score}  |  Best {best_score}"
-    (sw, sh), _ = cv2.getTextSize(scores, _FONT, 0.72, 2)
-    cv2.putText(
+    y_line = ty + th + 16
+    sc = f"{int(score):,}" if score >= 1000 else str(int(score))
+    (swsc, _), _ = cv2.getTextSize(sc, _FONT, 0.78, 2)
+    _outlined_text(frame, sc, (w - swsc) // 2, y_line, 0.78, 2, UI["title"])
+    (bw, _), _ = cv2.getTextSize(f"BEST {int(best_score)}", _FONT, 0.42, 1)
+    _outlined_text(
         frame,
-        scores,
-        ((w - sw) // 2, ty + th + 18),
-        _FONT,
-        0.72,
+        f"BEST {int(best_score)}",
+        (w - bw) // 2,
+        y_line + 22,
+        0.42,
+        1,
         UI["subtitle"],
-        2,
-        cv2.LINE_AA,
     )
 
-    subtitle = "Press R to restart"
-    (sw2, sh2), _ = cv2.getTextSize(subtitle, _FONT, 0.82, 2)
-    cv2.putText(
-        frame,
-        subtitle,
-        ((w - sw2) // 2, ty + th + 18 + sh + 54),
-        _FONT,
-        0.82,
-        UI["subtitle"],
-        2,
-        cv2.LINE_AA,
-    )
+    y_stats = y_line + 52
     if summary:
         info = (
-            f"Pops {summary.get('pops', 0)}  Misses {summary.get('misses', 0)}  "
-            f"Acc {summary.get('accuracy', 0.0):.0f}%  Best Combo {summary.get('best_combo', 0)}"
+            f"Pops {summary.get('pops', 0)}   Miss {summary.get('misses', 0)}   "
+            f"{summary.get('accuracy', 0.0):.0f}% acc   Combo {summary.get('best_combo', 0)}"
         )
-        (iw, _), _ = cv2.getTextSize(info, _FONT, 0.50, 1)
-        cv2.putText(
+        (iw, _), _ = cv2.getTextSize(info, _FONT, 0.46, 1)
+        _outlined_text(
             frame,
             info,
-            ((w - iw) // 2, ty + th + 18 + sh + 24),
-            _FONT,
-            0.50,
-            (180, 200, 220),
+            (w - iw) // 2,
+            y_stats,
+            0.46,
             1,
-            cv2.LINE_AA,
+            UI["subtitle"],
         )
         rew = (
-            f"Missions +{summary.get('coins_earned', 0)}c  "
-            f"Completed {summary.get('missions_completed', 0)}"
+            f"Missions +{summary.get('coins_earned', 0)} coins · "
+            f"{summary.get('missions_completed', 0)} cleared"
         )
-        (rw, _), _ = cv2.getTextSize(rew, _FONT, 0.50, 1)
-        cv2.putText(
+        (rw, _), _ = cv2.getTextSize(rew, _FONT, 0.42, 1)
+        _outlined_text(
             frame,
             rew,
-            ((w - rw) // 2, ty + th + 18 + sh + 42),
-            _FONT,
-            0.50,
-            (160, 220, 190),
+            (w - rw) // 2,
+            y_stats + 20,
+            0.42,
             1,
-            cv2.LINE_AA,
+            (130, 220, 185),
         )
-        stage = f"Level {summary.get('level', 1)} · {summary.get('stage', 'Rookie')}"
-        (vw, _), _ = cv2.getTextSize(stage, _FONT, 0.50, 1)
-        cv2.putText(
+        stage = f"LV {summary.get('level', 1)} · {summary.get('stage', 'Rookie')}"
+        (vw, _), _ = cv2.getTextSize(stage, _FONT, 0.42, 1)
+        _outlined_text(
             frame,
             stage,
-            ((w - vw) // 2, ty + th + 18 + sh + 60),
-            _FONT,
-            0.50,
-            (185, 205, 230),
+            (w - vw) // 2,
+            y_stats + 40,
+            0.42,
             1,
-            cv2.LINE_AA,
+            UI["hint"],
         )
+        y_bottom = y_stats + 64
+    else:
+        y_bottom = y_line + 44
+
+    sub = "[R] restart"
+    (sw2, _), _ = cv2.getTextSize(sub, _FONT, 0.48, 1)
+    _outlined_text(frame, sub, (w - sw2) // 2, min(y2 - 22, y_bottom), 0.48, 1, UI["accent"])
 
 
 def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
@@ -646,29 +708,18 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
 
 def draw_instructions(frame, game, tick=0):
     h, w, _ = frame.shape
-    y1 = h - 26
-    y2 = h - 8
-    _outlined_text(
-        frame,
-        "Pop colored balls for score",
-        10,
-        y1,
-        0.42,
-        1,
-        (232, 236, 245),
-    )
     if game.lives_left >= game.lives_max:
-        line2 = "Green + life pickups unlock after you lose a heart"
+        extra = " · Green + unlocks after first miss"
     else:
-        line2 = "Green + = +1 life (missing it is OK)"
-    s2 = 0.42
-    thick = 1
-    for _ in range(12):
-        (tw2, _), _ = cv2.getTextSize(line2, _FONT, s2, thick)
-        if tw2 <= w - 32:
+        extra = " · Green + = +1 life"
+    line = f"Pop balls for score{extra} · [M] reroll tasks · [N] skip run wait"
+    s, thick = 0.36, 1
+    for _ in range(14):
+        (tw, _), _ = cv2.getTextSize(line, _FONT, s, thick)
+        if tw <= w - 20:
             break
-        s2 = max(0.32, s2 - 0.03)
-    _outlined_text(frame, line2, 18, y2, s2, thick, (210, 218, 232))
+        s = max(0.28, s - 0.02)
+    _outlined_text(frame, line, (w - tw) // 2, h - 12, s, thick, UI["hint"])
 
 
 def render(
@@ -700,28 +751,28 @@ def render(
 
     draw_balls(frame, game.balls, game.frame_count)
     draw_confetti(frame, game.confetti_particles)
-    draw_score(frame, game.score, game.best_score)
-    draw_progression(frame, game.level, game.stage_name, game.xp, game.xp_next, game.coins)
-    draw_level_flow(
-        frame,
-        game.play_level,
-        game.missions,
-        game.level_transition_pending,
-        game.level_complete_frames,
-    )
-    draw_missions(frame, game.missions)
-    draw_lives(frame, game.lives_left, game.lives_max)
+
+    if not game.game_over:
+        draw_unified_hud(
+            frame,
+            game,
+            ui_tick=ui_tick,
+            quiet_on=quiet_on,
+            countdown_on=countdown_on,
+            milestone_on=milestone_on,
+        )
+    if not game.game_over:
+        draw_level_transition_overlay(
+            frame,
+            game.level_transition_pending,
+            game.level_complete_frames,
+        )
     draw_floating_texts(frame, game.floating_texts, max_items=2 if quiet_on else 6)
 
     if countdown_on:
         draw_countdown(frame, game.countdown_frames, ui_tick)
-    else:
-        draw_combo(frame, game.combo, game.multiplier)
-        if milestone_on:
-            draw_combo_milestone(frame, game.combo_milestone)
-        elif not quiet_on:
-            draw_chasing_best(frame, game.score, game.best_score)
-            draw_hot_streak(frame, game.combo, ui_tick)
+    elif milestone_on:
+        draw_combo_milestone(frame, game.combo_milestone)
 
     if game.juice_rim_frames > 0 and not countdown_on and not quiet_on:
         draw_juice_rim(frame, game.juice_rim_frames, ui_tick)
