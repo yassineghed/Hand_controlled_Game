@@ -654,15 +654,16 @@ class GameEngine:
                 self.lives_left -= 1
                 self.run_misses += 1
                 self.floating_texts.append({
-                    "text": "−1",
+                    "text": "-1",
                     "x": float(self.width) / 2,
-                    "y": float(self.height) * 0.4,
+                    "y": float(self.height) * 0.36,
                     "vx": 0.0,
                     "vy": -0.6,
                     "life": 45,
                     "max_life": 45,
-                    "color": (0, 0, 255),
-                    "scale": 1.1,
+                    # Light coral (BGR): reads on dark hair; outline from renderer adds contrast.
+                    "color": (210, 230, 255),
+                    "scale": 1.0,
                 })
                 if self.lives_left <= 0:
                     self.game_over = True

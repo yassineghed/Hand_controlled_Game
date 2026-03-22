@@ -19,21 +19,35 @@ UI = {
     "title": (200, 248, 255),
     "title_sh": (14, 12, 22),
     "subtitle": (195, 205, 225),
+    "subtitle_muted": (155, 168, 188),
     "hint": (165, 174, 196),
     "accent": (255, 215, 120),  # warm highlight (progress sweep, borders)
+    "accent_soft": (200, 190, 255),  # combo / highlights without harsh gold
     "ok": (88, 200, 125),
     "border": (90, 86, 110),
     "hand_ok": (72, 210, 255),  # matches title family
     "hand_idle": (58, 54, 64),
     "hand_ring_ok": (210, 235, 255),
     "hand_ring_idle": (92, 96, 108),
-    "hud_veil": (26, 28, 40),
-    "hud_line": (120, 200, 255),
+    "hud_veil": (32, 34, 48),
+    "hud_line": (130, 195, 245),
+    "run_bar_fill": (120, 235, 255),
+    "hud_chip": (42, 44, 58),
+    "outline_soft": (36, 38, 52),
+    "life_full": (170, 115, 245),
+    "life_mid": (155, 185, 255),
+    "life_low": (105, 95, 255),
+    "life_off": (62, 60, 74),
+    "xp_fill": (255, 195, 110),
+    "mission_done": (115, 220, 175),
+    "hud_dock": (38, 40, 54),
+    "hud_divider": (70, 68, 88),
+    "ball_rim": (55, 52, 62),
 }
 
-# Hands — cyan / magenta (distinct from life green)
-_HAND_OUTER = (255, 220, 0)
-_HAND_INNER = (255, 0, 180)
+# Hands — warm gold / soft magenta (readable, less harsh than pure primaries)
+_HAND_OUTER = (255, 200, 95)
+_HAND_INNER = (220, 95, 255)
 
 
 def _grad_layer(h, w):
@@ -44,9 +58,32 @@ def _grad_layer(h, w):
     return np.broadcast_to(g, (h, w, 3))
 
 
+def _hershey_safe(text: str) -> str:
+    """
+    OpenCV's bundled Hershey fonts only draw ASCII; other codepoints show as '?'.
+    Normalize common punctuation, then drop anything else non-ASCII.
+    """
+    s = str(text)
+    for a, b in (
+        ("\u2212", "-"),
+        ("\u2013", "-"),
+        ("\u2014", "-"),
+        ("\u00b7", "|"),
+        ("\u2022", "*"),
+        ("\u2026", "..."),
+        ("\u00d7", "x"),
+        ("\u2018", "'"),
+        ("\u2019", "'"),
+        ("\u2020", "+"),
+    ):
+        s = s.replace(a, b)
+    return "".join(c for c in s if ord(c) < 128)
+
+
 def _shadow_text(frame, text, x, y, scale, thick, color, shadow=None):
     if shadow is None:
         shadow = UI["title_sh"]
+    text = _hershey_safe(text)
     cv2.putText(frame, text, (x + 2, y + 2), _FONT, scale, shadow, thick, cv2.LINE_AA)
     cv2.putText(frame, text, (x, y), _FONT, scale, color, thick, cv2.LINE_AA)
 
@@ -54,7 +91,8 @@ def _shadow_text(frame, text, x, y, scale, thick, color, shadow=None):
 def _outlined_text(frame, text, x, y, scale, thick, fill, outline=None):
     """Readable on any background — no tinted banner needed."""
     if outline is None:
-        outline = (22, 20, 32)
+        outline = UI["outline_soft"]
+    text = _hershey_safe(text)
     ot = max(thick + 2, 3)
     cv2.putText(frame, text, (x, y), _FONT, scale, outline, ot, cv2.LINE_AA)
     cv2.putText(frame, text, (x, y), _FONT, scale, fill, thick, cv2.LINE_AA)
@@ -130,16 +168,141 @@ def _ease_out_cubic(t):
     return 1.0 - pow(1.0 - t, 3)
 
 
-def _top_veil(frame, strip_h, alpha=0.34):
-    """Darken top band so HUD text reads on busy camera feed."""
+def _top_veil_gradient(frame, strip_h, vmax=0.24, vmin=0.05):
+    """
+    Feathered top tint: strongest under the HUD, fades out so the playfield
+    stays open and the camera feed feels less “boxed in”.
+    """
     h, w = frame.shape[:2]
     strip_h = max(0, min(int(strip_h), h))
     if strip_h <= 0:
         return
-    roi = frame[0:strip_h, 0:w]
-    veil = np.full_like(roi, UI["hud_veil"], dtype=np.uint8)
-    blended = cv2.addWeighted(roi, 1.0 - alpha, veil, alpha, 0)
-    frame[0:strip_h, 0:w] = blended
+    roi = frame[:strip_h, :].astype(np.float32)
+    t = np.linspace(1.0, 0.0, strip_h, dtype=np.float32) ** 0.82
+    alphas = (vmin + (vmax - vmin) * t).reshape(strip_h, 1, 1)
+    veil = np.array(UI["hud_veil"], dtype=np.float32)
+    blended = roi * (1.0 - alphas) + veil * alphas
+    frame[:strip_h, :] = np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _hud_frost_plate(frame, x1, y1, x2, y2, fill_alpha=0.38, chip_color=None):
+    """Small frosted panel behind text groups — easier scanning than raw outlines."""
+    H, W = frame.shape[:2]
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(W, int(x2)), min(H, int(y2))
+    if x2 <= x1 + 2 or y2 <= y1 + 2:
+        return
+    roi = frame[y1:y2, x1:x2].astype(np.float32)
+    base_bgr = chip_color if chip_color is not None else UI["hud_chip"]
+    chip_arr = np.array(base_bgr, dtype=np.float32)
+    blended = roi * (1.0 - fill_alpha) + chip_arr * fill_alpha
+    frame[y1:y2, x1:x2] = blended.astype(np.uint8)
+    rim = _lerp_bgr(base_bgr, UI["border"], 0.45)
+    cv2.rectangle(frame, (x1, y1), (x2 - 1, y2 - 1), rim, 1, cv2.LINE_AA)
+
+
+def _hud_dock_gradient(
+    frame,
+    x1,
+    y1,
+    x2,
+    y2,
+    *,
+    chip_bgr=None,
+    max_alpha=0.58,
+    gamma=1.22,
+    top_rim=True,
+):
+    """
+    HUD header tint: strong at top, alpha -> 0 at bottom (camera shows through).
+    """
+    H, W = frame.shape[:2]
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(W, int(x2)), min(H, int(y2))
+    if x2 <= x1 + 2 or y2 <= y1 + 2:
+        return
+    roi = frame[y1:y2, x1:x2].astype(np.float32)
+    base_bgr = chip_bgr if chip_bgr is not None else UI["hud_dock"]
+    chip_arr = np.array(base_bgr, dtype=np.float32)
+    h = y2 - y1
+    t = np.linspace(1.0, 0.0, h, dtype=np.float32)
+    t = np.power(t, gamma)
+    alphas = (max_alpha * t).reshape(h, 1, 1)
+    blended = roi * (1.0 - alphas) + chip_arr * alphas
+    frame[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+    if top_rim:
+        rim = _lerp_bgr(base_bgr, UI["border"], 0.55)
+        cv2.line(frame, (x1, y1), (x2 - 1, y1), rim, 1, cv2.LINE_AA)
+
+
+def _fade_vertical_line(frame, x, y0, y1, base_bgr):
+    """Column divider: strong at top, blends into the scene toward the bottom."""
+    W = frame.shape[1]
+    x = int(max(0, min(W - 1, x)))
+    y0, y1 = int(y0), int(y1)
+    if y1 <= y0 + 2:
+        return
+    h = y1 - y0
+    steps = max(8, min(28, h // 3))
+    dv = np.array(base_bgr, dtype=np.float32)
+    for i in range(steps):
+        ya = int(y0 + (i / steps) * h)
+        yb = int(y0 + ((i + 1) / steps) * h)
+        if yb <= ya:
+            continue
+        ym = min(max((ya + yb) // 2, 0), frame.shape[0] - 1)
+        pix = frame[ym, x].astype(np.float32)
+        fade = (ym - y0) / float(h)
+        strength = math.pow(max(0.0, 1.0 - fade), 1.12) * 0.38
+        col = pix * (1.0 - strength) + dv * strength
+        col_bgr = tuple(int(np.clip(c, 0, 255)) for c in col)
+        cv2.line(frame, (x, ya), (x, yb), col_bgr, 1, cv2.LINE_AA)
+
+def _strong_text(frame, text, x, y, scale, fill, outline=None):
+    """Heavier glyphs for hero numbers (Hershey has no real bold)."""
+    if outline is None:
+        outline = UI["outline_soft"]
+    text = _hershey_safe(text)
+    ot = max(int(scale * 4), 4)
+    cv2.putText(frame, text, (x, y), _FONT, scale, outline, ot, cv2.LINE_AA)
+    cv2.putText(frame, text, (x, y), _FONT, scale, fill, 2, cv2.LINE_AA)
+    cv2.putText(frame, text, (x + 1, y), _FONT, scale, fill, 1, cv2.LINE_AA)
+
+
+def _mission_compact(m):
+    """Short HUD lines: id + counts only (full label is clutter during motion)."""
+    mid = m.get("id", "")
+    prog = int(m.get("progress", 0))
+    tgt = int(m.get("target", 0))
+    done = bool(m.get("done", False))
+    mark = "+" if done else "-"
+    if mid == "score":
+        body = f"Score {prog}/{tgt}"
+    elif mid == "pop":
+        body = f"Pops {prog}/{tgt}"
+    elif mid == "combo":
+        body = f"Combo {prog}/{tgt}"
+    elif mid == "heal":
+        body = f"Heal {prog}/{tgt}"
+    else:
+        body = _truncate(m.get("label", ""), 16)
+    return f"{mark} {body}"
+
+
+def _bottom_veil_gradient(frame, strip_h, vmax=0.18, vmin=0.02):
+    """Light footer tint so hints read without a hard bar."""
+    h, w = frame.shape[:2]
+    strip_h = max(0, min(int(strip_h), h))
+    if strip_h <= 0:
+        return
+    y0 = h - strip_h
+    roi = frame[y0:h, :].astype(np.float32)
+    # strong near bottom edge, fade upward
+    t = np.linspace(0.0, 1.0, strip_h, dtype=np.float32) ** 0.9
+    alphas = (vmin + (vmax - vmin) * t).reshape(strip_h, 1, 1)
+    veil = np.array(UI["hud_veil"], dtype=np.float32)
+    blended = roi * (1.0 - alphas) + veil * alphas
+    frame[y0:h, :] = np.clip(blended, 0, 255).astype(np.uint8)
 
 
 def _text_right(frame, text, right_x, y, scale, thick, fill, outline=None):
@@ -151,7 +314,7 @@ def _truncate(s, max_chars):
     s = str(s)
     if len(s) <= max_chars:
         return s
-    return s[: max(0, max_chars - 1)] + "…"
+    return s[: max(0, max_chars - 1)] + "..."
 
 
 def draw_loading_screen(camera_bgr, tick):
@@ -190,7 +353,7 @@ def draw_loading_screen(camera_bgr, tick):
         pr = 4 + int(3 * (0.5 + 0.5 * math.sin(a * 1.3)))
         cv2.circle(out, (px, py), pr, UI["hand_ok"], -1, cv2.LINE_AA)
 
-    hint = "Camera preview — wave when ready"
+    hint = "Camera preview - wave when ready"
     (hw, _), _ = cv2.getTextSize(hint, _FONT, 0.52, 1)
     cv2.putText(
         out,
@@ -210,22 +373,32 @@ def draw_hands(frame, hands):
         x = int(hand["x"])
         y = int(hand["y"])
         r = int(hand["radius"])
-        cv2.circle(frame, (x, y), r, _HAND_OUTER, 3)
-        cv2.circle(frame, (x, y), max(1, r - 2), _HAND_INNER, 1)
+        cv2.circle(frame, (x, y), r, _HAND_OUTER, 2, cv2.LINE_AA)
+        cv2.circle(frame, (x, y), max(1, r - 2), _HAND_INNER, 1, cv2.LINE_AA)
 
 
 def _draw_shaded_sphere(frame, cx, cy, r, color):
-    """Simple 2.5D ball: soft shadow, base fill, specular blob."""
+    """2.5D ball: ambient shadow, fill, dual specular, soft rim (not harsh black)."""
     if r < 3:
-        cv2.circle(frame, (cx, cy), r, color, -1)
+        cv2.circle(frame, (cx, cy), r, color, -1, cv2.LINE_AA)
         return
-    sh = _mul_bgr(color, 0.28)
-    cv2.circle(frame, (cx + max(1, r // 8), cy + max(1, r // 5)), max(1, r - 2), sh, -1)
-    cv2.circle(frame, (cx, cy), r, color, -1)
-    hi = _lerp_bgr(color, (255, 255, 255), 0.55)
+    sh = _mul_bgr(color, 0.32)
+    cv2.circle(
+        frame,
+        (cx + max(1, r // 7), cy + max(1, r // 4)),
+        max(1, r - 2),
+        sh,
+        -1,
+        cv2.LINE_AA,
+    )
+    cv2.circle(frame, (cx, cy), r, color, -1, cv2.LINE_AA)
+    hi = _lerp_bgr(color, (255, 255, 255), 0.5)
     hr = max(3, r // 3)
-    cv2.circle(frame, (cx - r // 3, cy - r // 3), hr, hi, -1)
-    cv2.circle(frame, (cx, cy), r, (40, 40, 40), 2)
+    cv2.circle(frame, (cx - r // 3, cy - r // 3), hr, hi, -1, cv2.LINE_AA)
+    hi2 = _lerp_bgr(color, (255, 255, 255), 0.25)
+    cv2.circle(frame, (cx + r // 5, cy + r // 6), max(2, r // 5), hi2, -1, cv2.LINE_AA)
+    rim = _lerp_bgr(color, UI["ball_rim"], 0.55)
+    cv2.circle(frame, (cx, cy), r, rim, 2, cv2.LINE_AA)
 
 
 def _draw_health_pickup(frame, cx, cy, r, color, frame_count):
@@ -280,26 +453,27 @@ def draw_confetti(frame, particles):
         cv2.circle(frame, (x, y), size, faded_color, -1)
 
 
-def _draw_lives_row(frame, lives_left, lives_max, center_y):
+def _draw_lives_row(frame, lives_left, lives_max, center_y, center_x=None, spacing=24, r=9):
     h, w, _ = frame.shape
-    spacing = 18
-    r = 6
+    if center_x is None:
+        center_x = w // 2
     total_w = (lives_max - 1) * spacing
-    x0 = (w - total_w) // 2
+    x0 = int(center_x - total_w // 2)
 
     if lives_left >= 4:
-        on_color = (72, 210, 130)
+        on_color = UI["life_full"]
     elif lives_left >= 2:
-        on_color = (255, 200, 90)
+        on_color = UI["life_mid"]
     else:
-        on_color = (80, 80, 255)
-    off_color = (52, 50, 58)
+        on_color = UI["life_low"]
+    off_color = UI["life_off"]
+    rim = (72, 70, 88)
 
     for i in range(lives_max):
         cx = x0 + i * spacing
         color = on_color if i < lives_left else off_color
         cv2.circle(frame, (cx, center_y), r, color, -1, cv2.LINE_AA)
-        cv2.circle(frame, (cx, center_y), r, (28, 26, 34), 1, cv2.LINE_AA)
+        cv2.circle(frame, (cx, center_y), r, rim, 1, cv2.LINE_AA)
 
 
 def _draw_thin_bar(frame, bx, by, bw, bh, fill_t, fill_col, track_col=None, rim_col=None):
@@ -321,8 +495,9 @@ def _draw_thin_bar(frame, bx, by, bw, bh, fill_t, fill_col, track_col=None, rim_
 
 def draw_unified_hud(frame, game, *, ui_tick, quiet_on, countdown_on, milestone_on):
     """
-    Single top layout: score (left), lives + run progress (center), profile + missions (right).
-    Avoids stacking everything in one corner and overlapping combo/lives.
+    Single top dock (one surface, three columns): matches how polished games group HUD.
+    Left = performance, center = risk + run flow (lives sized for peripheral vision),
+    right = profile + compact tasks. Dividers align scanning; no orphan center strip.
     """
     if getattr(game, "game_over", False):
         return
@@ -330,85 +505,152 @@ def draw_unified_hud(frame, game, *, ui_tick, quiet_on, countdown_on, milestone_
     h, w, _ = frame.shape
     missions = game.missions or []
     has_missions = len(missions) > 0
-    strip_h = 102 if has_missions else 86
-    _top_veil(frame, strip_h, 0.32)
-
-    margin = 16
-    right_x = w - margin
-
-    # --- Left: score + best (+ chase hint) ---
-    score_txt = f"{int(game.score):,}" if game.score >= 1000 else str(int(game.score))
-    _outlined_text(frame, score_txt, margin, 30, 0.62, 1, UI["title"])
-    _outlined_text(frame, f"BEST {int(game.best_score)}", margin, 52, 0.34, 1, UI["subtitle"])
-    if not quiet_on and not countdown_on and not milestone_on:
-        gap = int(game.best_score) - int(game.score)
-        if int(game.best_score) > 0 and 1 <= gap <= 8:
-            chase = "1 to beat best!" if gap == 1 else f"{gap} to beat best!"
-            _outlined_text(frame, chase, margin, 72, 0.34, 1, UI["hud_line"])
-
-    # --- Center: lives, run label, mission aggregate bar, combo row ---
-    cy = 28
-    _draw_lives_row(frame, game.lives_left, game.lives_max, cy)
     done = sum(1 for m in missions if bool(m.get("done", False)))
     total = max(1, len(missions))
     t_m = done / float(total)
-    run_label = f"RUN {int(game.play_level)}"
-    sl, st = 0.36, 1
-    (rw, _), _ = cv2.getTextSize(run_label, _FONT, sl, st)
-    _outlined_text(frame, run_label, (w - rw) // 2, cy + 18, sl, st, UI["subtitle"])
 
-    bar_w = min(150, w // 4)
-    bar_h = 6
-    bx = (w - bar_w) // 2
-    by = cy + 24
-    _draw_thin_bar(frame, bx, by, bar_w, bar_h, t_m, UI["hud_line"])
+    margin_x = 0
+    dock_top = 0
+    dock_h = 136 if has_missions else 102
+    dock_x1 = margin_x
+    dock_x2 = w - margin_x
+    dock_bot = dock_top + dock_h
 
-    if not countdown_on and int(game.multiplier) > 1:
-        ctext = f"×{int(game.multiplier)}"
-        cs, ct = 0.56, 1
-        (cw, _), _ = cv2.getTextSize(ctext, _FONT, cs, ct)
-        _outlined_text(
-            frame,
-            ctext,
-            (w - cw) // 2,
-            by + 16,
-            cs,
-            ct,
-            UI["accent"],
-        )
-        if int(game.combo) >= 10 and not quiet_on and not milestone_on:
-            flicker = 0.88 + 0.12 * math.sin(ui_tick * 0.22)
-            hs = "HOT STREAK"
-            hs_scale = 0.34
+    _hud_dock_gradient(
+        frame,
+        dock_x1,
+        dock_top,
+        dock_x2,
+        dock_bot,
+        chip_bgr=UI["hud_dock"],
+        max_alpha=0.60,
+        gamma=1.22,
+        top_rim=True,
+    )
+    # Feather a little extra darkness only in the top few px (optional continuity)
+    _top_veil_gradient(frame, min(h, dock_top + 6), vmax=0.06, vmin=0.0)
+
+    col_w = max(80, (dock_x2 - dock_x1) // 3)
+    split1 = dock_x1 + col_w
+    split2 = dock_x1 + 2 * col_w
+    if split2 > dock_x2 - 20:
+        split2 = dock_x2 - 20
+        split1 = dock_x1 + (split2 - dock_x1) // 2
+    mid_cx = (split1 + split2) // 2
+
+    div_y0 = dock_top + 8
+    div_y1 = dock_bot - 4
+    _fade_vertical_line(frame, split1, div_y0, div_y1, UI["hud_divider"])
+    _fade_vertical_line(frame, split2, div_y0, div_y1, UI["hud_divider"])
+
+    show_chase = (
+        not quiet_on
+        and not countdown_on
+        and not milestone_on
+        and int(game.best_score) > 0
+        and 1 <= (int(game.best_score) - int(game.score)) <= 8
+    )
+
+    # --- Left column: hero score + record ---
+    lx = dock_x1 + 12
+    ly = dock_top + 26
+    score_txt = _hershey_safe(
+        f"{int(game.score):,}" if game.score >= 1000 else str(int(game.score))
+    )
+    _strong_text(frame, score_txt, lx, ly, 0.76, UI["title"])
+    (_, sh_sc), _ = cv2.getTextSize(score_txt, _FONT, 0.76, 2)
+    rec_y = ly + sh_sc + 6
+    rec = f"Record {int(game.best_score)}"
+    _outlined_text(frame, rec, lx, rec_y, 0.38, 1, UI["subtitle"])
+    if show_chase:
+        gap = int(game.best_score) - int(game.score)
+        chase = "1 pt to beat record" if gap == 1 else f"{gap} pts to beat record"
+        (_, rh), _ = cv2.getTextSize(rec, _FONT, 0.38, 1)
+        _outlined_text(frame, chase, lx, rec_y + rh + 4, 0.32, 1, UI["accent"])
+
+    # --- Center column: lives + run + task bar + combo ---
+    cy = dock_top + 44
+    _draw_lives_row(frame, game.lives_left, game.lives_max, cy, center_x=mid_cx)
+    if missions:
+        run_label = f"RUN {int(game.play_level)}  |  {done}/{total} tasks"
+    else:
+        run_label = f"RUN {int(game.play_level)}"
+    sl = 0.34
+    (rw, _), _ = cv2.getTextSize(_hershey_safe(run_label), _FONT, sl, 1)
+    _outlined_text(frame, run_label, mid_cx - rw // 2, cy + 20, sl, 1, UI["subtitle_muted"])
+
+    bar_w = min(200, col_w - 20)
+    bar_h = 7
+    bx = int(mid_cx - bar_w // 2)
+    by = cy + 30
+    _draw_thin_bar(
+        frame,
+        bx,
+        by,
+        bar_w,
+        bar_h,
+        t_m,
+        UI["run_bar_fill"],
+        track_col=(50, 48, 64),
+        rim_col=(98, 102, 128),
+    )
+
+    if not countdown_on and int(game.multiplier) > 1 and not milestone_on:
+        ctext = f"x{int(game.multiplier)}"
+        cs = 0.5
+        (cw, _), _ = cv2.getTextSize(ctext, _FONT, cs, 2)
+        combo_y = by + bar_h + 16
+        _strong_text(frame, ctext, mid_cx - cw // 2, combo_y, cs, UI["accent_soft"])
+        if int(game.combo) >= 10 and not quiet_on:
+            breathe = 0.92 + 0.08 * math.sin(ui_tick * 0.12)
+            hs = "On a roll"
+            hs_scale = 0.30
             (hw, _), _ = cv2.getTextSize(hs, _FONT, hs_scale, 1)
+            base = UI["accent"]
             col = (
-                int(140 * flicker),
-                int(210 * flicker),
-                int(255 * flicker),
+                int(base[0] * breathe),
+                int(base[1] * breathe),
+                int(base[2] * breathe),
             )
-            _outlined_text(frame, hs, (w - hw) // 2, by + 36, hs_scale, 1, col)
+            _outlined_text(frame, hs, mid_cx - hw // 2, combo_y + 18, hs_scale, 1, col)
 
-    # --- Right: meta level, XP, coins, missions (right-aligned) ---
-    stage_short = _truncate(game.stage_name, 12)
-    _text_right(frame, f"LV {int(game.level)} · {stage_short}", right_x, 26, 0.38, 1, UI["title"])
+    # --- Right column: profile, XP, coins, compact missions ---
+    rx = dock_x2 - 12
+    ry = dock_top + 22
+    stage_short = _truncate(game.stage_name, 10)
+    prof_line = f"Lv{int(game.level)}  {stage_short}"
+    _text_right(frame, prof_line, rx, ry, 0.38, 1, UI["title"])
+
     xp_next = max(1, int(getattr(game, "xp_next", 1)))
     t_xp = max(0.0, min(1.0, float(game.xp) / float(xp_next)))
-    bar_w2 = min(118, w // 5)
-    bx2 = right_x - bar_w2
-    by2 = 40
-    _draw_thin_bar(frame, bx2, by2, bar_w2, 5, t_xp, (140, 200, 255))
-    _text_right(frame, f"{int(game.coins)} coins", right_x, by2 + 12, 0.34, 1, UI["accent"])
+    (_, ph_p), _ = cv2.getTextSize(_hershey_safe(prof_line), _FONT, 0.38, 1)
+    bar_w2 = min(138, col_w - 22)
+    by2 = ry + ph_p + 7
+    bx2 = rx - bar_w2
+    _draw_thin_bar(
+        frame,
+        bx2,
+        by2,
+        bar_w2,
+        6,
+        t_xp,
+        UI["xp_fill"],
+        track_col=(50, 48, 64),
+        rim_col=(98, 102, 128),
+    )
+
+    coin_line = f"{int(game.coins)} coins"
+    _text_right(frame, coin_line, rx, by2 + 16, 0.34, 1, UI["accent"])
 
     if has_missions:
         my = by2 + 30
         for m in missions[:3]:
-            done_m = bool(m.get("done", False))
-            short = _truncate(m.get("label", ""), 22)
-            line = f"{int(m.get('progress', 0))}/{int(m.get('target', 0))} {short}"
-            col = (120, 230, 175) if done_m else UI["subtitle"]
-            _text_right(frame, line, right_x, my, 0.32, 1, col)
-            my += 17
-        _text_right(frame, "[M] reroll tasks", right_x, my + 2, 0.28, 1, UI["hint"])
+            line = _mission_compact(m)
+            col = UI["mission_done"] if m.get("done") else UI["subtitle"]
+            _text_right(frame, line, rx, my, 0.33, 1, col)
+            (_, mh), _ = cv2.getTextSize(_hershey_safe(line), _FONT, 0.33, 1)
+            my += mh + 4
+        _text_right(frame, "[M] reroll", rx, my + 2, 0.28, 1, UI["hint"])
 
 
 def draw_level_transition_overlay(frame, transition_pending, _transition_frames):
@@ -417,33 +659,15 @@ def draw_level_transition_overlay(frame, transition_pending, _transition_frames)
         return
     h, w, _ = frame.shape
     y0 = int(h * 0.20)
-    _outlined_text(
-        frame,
-        "RUN COMPLETE",
-        (w // 2) - 118,
-        y0,
-        0.62,
-        2,
-        UI["accent"],
-    )
-    _outlined_text(
-        frame,
-        "Next run loading…",
-        (w // 2) - 108,
-        y0 + 28,
-        0.40,
-        1,
-        UI["subtitle"],
-    )
-    _outlined_text(
-        frame,
-        "[N] continue now",
-        (w // 2) - 88,
-        y0 + 50,
-        0.36,
-        1,
-        UI["hint"],
-    )
+    t1 = "Run complete"
+    (tw1, _), _ = cv2.getTextSize(t1, _FONT, 0.58, 2)
+    _outlined_text(frame, t1, (w - tw1) // 2, y0, 0.58, 2, UI["accent_soft"])
+    t2 = "Preparing the next run..."
+    (tw2, _), _ = cv2.getTextSize(t2, _FONT, 0.38, 1)
+    _outlined_text(frame, t2, (w - tw2) // 2, y0 + 28, 0.38, 1, UI["subtitle"])
+    t3 = "[N] continue"
+    (tw3, _), _ = cv2.getTextSize(t3, _FONT, 0.34, 1)
+    _outlined_text(frame, t3, (w - tw3) // 2, y0 + 50, 0.34, 1, UI["hint"])
 
 
 def draw_floating_texts(frame, texts, max_items=6):
@@ -451,6 +675,9 @@ def draw_floating_texts(frame, texts, max_items=6):
         texts = texts[-max_items:]
     for t in texts:
         cx, y = t["x"], int(t["y"])
+        msg = _hershey_safe(t.get("text", ""))
+        if not msg:
+            continue
         life = t.get("life", 0)
         max_life = t.get("max_life", 1)
         t_norm = life / max(max_life, 1)
@@ -458,9 +685,9 @@ def draw_floating_texts(frame, texts, max_items=6):
         scale = t.get("scale", 0.9)
         thick = max(1, int(scale * 2))
         col = tuple(int(c * alpha) for c in t.get("color", (255, 255, 255)))
-        (tw, th), _ = cv2.getTextSize(t["text"], _FONT, scale, thick)
+        (tw, th), _ = cv2.getTextSize(msg, _FONT, scale, thick)
         x = int(cx) - tw // 2
-        _outlined_text(frame, t["text"], x, y, scale, thick, col)
+        _outlined_text(frame, msg, x, y, scale, thick, col)
 
 
 def draw_countdown(frame, countdown_frames, tick=0):
@@ -482,9 +709,9 @@ def draw_countdown(frame, countdown_frames, tick=0):
     (tw, th), _ = cv2.getTextSize(label, _FONT, scale, thick)
     x = (w - tw) // 2
     y = (h - th) // 2 + int(th * 0.4)
-    pulse = 0.9 + 0.15 * math.sin(tick * 0.2)
-    col = (int(255 * pulse), int(248 * pulse), int(220 * pulse))
-    _outlined_text(frame, label, x, y, scale, thick, col, outline=(25, 20, 35))
+    pulse = 0.94 + 0.06 * math.sin(tick * 0.14)
+    col = (int(245 * pulse), int(250 * pulse), int(255 * pulse))
+    _outlined_text(frame, label, x, y, scale, thick, col, outline=UI["outline_soft"])
 
 
 def draw_combo_milestone(frame, combo_milestone):
@@ -500,8 +727,8 @@ def draw_combo_milestone(frame, combo_milestone):
     (tw, th), _ = cv2.getTextSize(text, _FONT, scale, thick)
     x = (w - tw) // 2
     y = int(h * 0.33)
-    col = (int(255 * alpha), int(235 * alpha), int(130 * alpha))
-    _outlined_text(frame, text, x, y, scale, thick, col)
+    col = (int(230 * alpha), int(210 * alpha), int(255 * alpha))
+    _outlined_text(frame, text, x, y, scale, thick, col, outline=UI["outline_soft"])
 
 
 def draw_juice_rim(frame, frames_left, tick):
@@ -565,7 +792,7 @@ def draw_game_over(frame, score, best_score, summary=None, tick=0):
             UI["subtitle"],
         )
         rew = (
-            f"Missions +{summary.get('coins_earned', 0)} coins · "
+            f"Missions +{summary.get('coins_earned', 0)} coins | "
             f"{summary.get('missions_completed', 0)} cleared"
         )
         (rw, _), _ = cv2.getTextSize(rew, _FONT, 0.42, 1)
@@ -578,7 +805,7 @@ def draw_game_over(frame, score, best_score, summary=None, tick=0):
             1,
             (130, 220, 185),
         )
-        stage = f"LV {summary.get('level', 1)} · {summary.get('stage', 'Rookie')}"
+        stage = f"LV {summary.get('level', 1)} | {summary.get('stage', 'Rookie')}"
         (vw, _), _ = cv2.getTextSize(stage, _FONT, 0.42, 1)
         _outlined_text(
             frame,
@@ -613,7 +840,7 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
     _modal_border(frame, x1, y1, x2, y2, tick)
 
     title = "Show both hands to start"
-    sub = "Hold them in front of the camera — cyan rings appear when we track each hand."
+    sub = "Hold them steady - gold rings show when each hand is tracked."
 
     (tw, th), _ = cv2.getTextSize(title, _FONT, 0.95, 2)
     tx = (w - tw) // 2
@@ -696,7 +923,7 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
         _progress_bar(frame, bx, by, bar_w, bar_h, tick, fill_t=fill_t)
         cv2.putText(
             frame,
-            "Hold steady…",
+            "Hold steady...",
             (bx, by - 8),
             _FONT,
             0.5,
@@ -708,18 +935,19 @@ def draw_pregame_overlay(frame, num_hands, steady_count, steady_need, tick):
 
 def draw_instructions(frame, game, tick=0):
     h, w, _ = frame.shape
+    _bottom_veil_gradient(frame, 40, vmax=0.16, vmin=0.02)
     if game.lives_left >= game.lives_max:
-        extra = " · Green + unlocks after first miss"
+        extra = " | Green + after first miss"
     else:
-        extra = " · Green + = +1 life"
-    line = f"Pop balls for score{extra} · [M] reroll tasks · [N] skip run wait"
-    s, thick = 0.36, 1
+        extra = " | Green + = +1 life"
+    line = f"Pop balls{extra}  |  [M] reroll  |  [N] skip wait"
+    s, thick = 0.34, 1
     for _ in range(14):
         (tw, _), _ = cv2.getTextSize(line, _FONT, s, thick)
-        if tw <= w - 20:
+        if tw <= w - 24:
             break
         s = max(0.28, s - 0.02)
-    _outlined_text(frame, line, (w - tw) // 2, h - 12, s, thick, UI["hint"])
+    _outlined_text(frame, line, (w - tw) // 2, h - 14, s, thick, UI["subtitle_muted"])
 
 
 def render(
