@@ -1,5 +1,6 @@
 import math
 import random
+from collections import deque
 
 import cv2
 import numpy as np
@@ -78,7 +79,9 @@ class Ball:
         is_health_ball=False,
     ):
         self.is_health_ball = bool(is_health_ball)
-        self.radius = random.randint(34, 48) if self.is_health_ball else random.randint(20, 35)
+        self.radius = (
+            random.randint(22, 40) if self.is_health_ball else random.randint(18, 38)
+        )
         self.color = HEALTH_BALL_COLOR if self.is_health_ball else random.choice(BALL_COLORS)
 
         difficulty = max(0.5, float(difficulty))
@@ -110,6 +113,7 @@ class Ball:
             return random.randint(lo, hi)
 
         side = random.choices(_EDGE_WEIGHTS, weights=_EDGE_PROBS, k=1)[0]
+        self.spawn_side = side
 
         if side == "top":
             self.x = _edge_pos(width, mg_x)
@@ -142,10 +146,15 @@ class Ball:
 
         self.start_x = float(self.x)
         self.start_y = float(self.y)
+        self.trail = deque([(int(self.x), int(self.y))], maxlen=3)
+        self._near_miss_cd = 0
 
     def age_seconds(self, now):
         return float(now) - self.spawn_time
 
     def update(self):
+        # Trail stores the previous position (newest first) for visual rendering.
+        self.trail.appendleft((int(self.x), int(self.y)))
         self.x += self.vx
         self.y += self.vy
+        # Note: no second append here; trail already captured the pre-move position.

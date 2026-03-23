@@ -102,7 +102,29 @@ def main():
                 frame = np.zeros((max(height, 480), max(width, 640), 3), dtype=np.uint8)
             else:
                 frame = cv2.flip(frame, 1)
-            screen = renderer.draw_loading_screen(frame, tick)
+            screen = renderer.draw_frame(
+                frame,
+                {
+                    "mode": "loading",
+                    "tick": tick,
+                    "balls": [],
+                    "hand_positions": [],
+                    "particles": [],
+                    "popups": [],
+                    "shake_frames": 0,
+                    "combo_flash_frames": 0,
+                    "score": 0,
+                    "best_score": 0,
+                    "lives": 0,
+                    "max_lives": 0,
+                    "combo": 0,
+                    "goals": [],
+                    "run_number": 1,
+                    "level": 1,
+                    "coins": 0,
+                    "hint_alpha": 1.0,
+                },
+            )
             cv2.imshow("Hand Game", screen)
             cv2.waitKey(16)
             tick += 1
@@ -144,32 +166,95 @@ def main():
                         game.start_countdown(72)
                 else:
                     steady_hands_frames = 0
-                renderer.render(
+                renderer.draw_frame(
                     frame,
-                    game,
-                    hands,
-                    game_active=False,
-                    pregame_steady=steady_hands_frames,
-                    pregame_steady_need=STEADY_HAND_FRAMES,
-                    ui_tick=ui_tick,
+                    {
+                        "mode": "pregame",
+                        "balls": game.balls,
+                        "spawn_pending": game.spawn_pending,
+                        "hand_positions": [
+                            (h["x"], h["y"], h["confidence"], h["radius"])
+                            for h in hands
+                        ],
+                        "particles": (
+                            game.confetti_particles + game.pop_particles + game.near_miss_sparks
+                        ),
+                        "popups": game.floating_texts,
+                        "shake_frames": game.shake_frames,
+                        "combo_flash_frames": game.combo_flash_frames,
+                        "combo_pulse_frames": game.combo_pulse_frames,
+                        "combo_last_pop_frame": game.combo_last_pop_frame,
+                        "frame_count": game.frame_count,
+                        "life_loss_overlay_frames": game.life_loss_overlay_frames,
+                        "score": game.score,
+                        "best_score": game.best_score,
+                        "lives": game.lives_left,
+                        "max_lives": game.lives_max,
+                        "combo": game.combo,
+                        "goals": [
+                            {
+                                "name": m["label"],
+                                "current": m["progress"],
+                                "target": m["target"],
+                            }
+                            for m in game.missions
+                        ],
+                        "run_number": game.play_level,
+                        "level": game.level,
+                        "coins": game.coins,
+                        "hint_alpha": game.hint_bar_opacity,
+                        "pregame_steady": steady_hands_frames,
+                        "pregame_steady_need": STEADY_HAND_FRAMES,
+                        "ui_tick": ui_tick,
+                    },
                 )
             else:
                 game.update(hands)
                 while game.pending_audio_events:
                     sound.play(game.pending_audio_events.pop(0))
-                renderer.render(frame, game, hands, game_active=True, ui_tick=ui_tick)
-                if game.shake_frames > 0 and game.shake_strength > 0.0:
-                    amp = game.shake_strength * (game.shake_frames / 10.0)
-                    dx = int(np.random.uniform(-amp, amp))
-                    dy = int(np.random.uniform(-amp, amp))
-                    m = np.float32([[1, 0, dx], [0, 1, dy]])
-                    frame = cv2.warpAffine(
-                        frame,
-                        m,
-                        (frame.shape[1], frame.shape[0]),
-                        flags=cv2.INTER_LINEAR,
-                        borderMode=cv2.BORDER_REFLECT,
-                    )
+                renderer.draw_frame(
+                    frame,
+                    {
+                        "mode": "play",
+                        "balls": game.balls,
+                        "spawn_pending": game.spawn_pending,
+                        "hand_positions": [
+                            (h["x"], h["y"], h["confidence"], h["radius"])
+                            for h in hands
+                        ],
+                        "particles": (
+                            game.confetti_particles + game.pop_particles + game.near_miss_sparks
+                        ),
+                        "popups": game.floating_texts,
+                        "shake_frames": game.shake_frames,
+                        "combo_flash_frames": game.combo_flash_frames,
+                        "combo_pulse_frames": game.combo_pulse_frames,
+                        "combo_last_pop_frame": game.combo_last_pop_frame,
+                        "frame_count": game.frame_count,
+                        "life_loss_overlay_frames": game.life_loss_overlay_frames,
+                        "score": game.score,
+                        "best_score": game.best_score,
+                        "lives": game.lives_left,
+                        "max_lives": game.lives_max,
+                        "combo": game.combo,
+                        "goals": [
+                            {
+                                "name": m["label"],
+                                "current": m["progress"],
+                                "target": m["target"],
+                            }
+                            for m in game.missions
+                        ],
+                        "run_number": game.play_level,
+                        "level": game.level,
+                        "coins": game.coins,
+                        "hint_alpha": game.hint_bar_opacity,
+                        "ui_tick": ui_tick,
+                    },
+                )
+                # Step 1 extraction: shake rendering will be implemented inside renderer.
+                if game.shake_frames > 0:
+                    game.shake_frames -= 1
 
             cv2.imshow("Hand Game", frame)
             ui_tick += 1

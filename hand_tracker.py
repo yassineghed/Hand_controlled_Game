@@ -40,6 +40,13 @@ class HandTracker:
         h, w, _ = frame.shape
 
         for i, hand in enumerate(result.hand_landmarks):
+            vis = []
+            for lm in hand:
+                v = getattr(lm, "visibility", None)
+                if v is not None:
+                    vis.append(float(v))
+            conf = sum(vis) / len(vis) if vis else 0.75
+            conf = max(0.35, min(1.0, conf * 1.15))
 
             cx = (
                 hand[0].x +
@@ -68,7 +75,8 @@ class HandTracker:
             hands.append({
                 "x": x,
                 "y": y,
-                "radius": radius
+                "radius": radius,
+                "confidence": conf,
             })
 
         return hands

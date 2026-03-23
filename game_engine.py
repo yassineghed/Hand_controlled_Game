@@ -7,7 +7,15 @@ from pathlib import Path
 
 from objects import Ball
 
+import design_tokens as DT
+
 _SAVE_PATH = Path(__file__).resolve().parent / "hand_pop_best.json"
+
+# 0.35s @ 60fps — edge telegraph; pop burst lifetime (spec).
+TELEGRAPH_FRAMES = int(round(60 * DT.TELEGRAPH_SEC))
+POP_BURST_FRAMES = DT.DUR_POP_BURST
+
+SHAKE_OFFSETS = [(0, 0), (-8, 4), (7, -5), (-5, 3), (4, -2), (-2, 1)]
 _PROGRESS_PATH = Path(__file__).resolve().parent / "hand_pop_progress.json"
 
 
@@ -106,6 +114,8 @@ class GameEngine:
 
         self.confetti_particles = []
         self.confetti_gravity = 0.35
+        self.pop_particles = []
+        self.spawn_pending = []
         self.frame_count = 0
 
         self.countdown_frames = 0
@@ -116,6 +126,15 @@ class GameEngine:
         self.hit_stop_frames = 0
         self.shake_frames = 0
         self.shake_strength = 0.0
+        self.shake_keyed = False
+        self.hint_bar_opacity = 1.0
+        self.combo_last_pop_frame = -99999
+        self.combo_pulse_frames = 0
+        self.combo_flash_frames = 0
+        self.life_loss_overlay_frames = 0
+        self.life_loss_anim_frames = 0
+        self.goal_flash_frames = 0
+        self.near_miss_sparks = []
         self.pending_audio_events = []
         self.missions = []
         self.play_level = 1
@@ -146,6 +165,8 @@ class GameEngine:
         self.game_over = False
         self.spawn_timer = 0
         self.confetti_particles = []
+        self.pop_particles = []
+        self.spawn_pending = []
         self.countdown_frames = 0
         self.floating_texts = []
         self.combo_milestone = None
@@ -154,6 +175,15 @@ class GameEngine:
         self.hit_stop_frames = 0
         self.shake_frames = 0
         self.shake_strength = 0.0
+        self.shake_keyed = False
+        self.hint_bar_opacity = 1.0
+        self.combo_last_pop_frame = -99999
+        self.combo_pulse_frames = 0
+        self.combo_flash_frames = 0
+        self.life_loss_overlay_frames = 0
+        self.life_loss_anim_frames = 0
+        self.goal_flash_frames = 0
+        self.near_miss_sparks = []
         self.pending_audio_events = []
         self.play_level = 1
         self.level_transition_pending = False
@@ -210,6 +240,7 @@ class GameEngine:
             self._sync_stage()
             leveled_up = True
             self.floating_texts.append({
+                "kind": "event",
                 "text": f"LEVEL {self.level}!",
                 "x": float(self.width) * 0.5,
                 "y": float(self.height) * 0.28,
@@ -286,6 +317,7 @@ class GameEngine:
         self.level_complete_frames = 0
         self.mission_rerolls = 0
         self.balls = []
+        self.spawn_pending = []
         self.start_countdown(54)
         self._generate_missions()
         self._emit_audio("mission")
@@ -309,10 +341,12 @@ class GameEngine:
 
             if m["progress"] >= m["target"]:
                 m["done"] = True
+                self.goal_flash_frames = max(self.goal_flash_frames, DT.DUR_GOAL_FLASH)
                 self.run_missions_completed += 1
                 self.run_reward_coins += m["reward"]
                 self._grant_progress(coins=m["reward"], xp=m["reward"] * 2)
                 self.floating_texts.append({
+                    "kind": "event",
                     "text": f"MISSION +{m['reward']}c",
                     "x": float(self.width) * 0.5,
                     "y": float(self.height) * 0.18,
@@ -361,7 +395,7 @@ class GameEngine:
             min_travel_fraction=self.min_ball_travel_fraction,
             is_health_ball=is_health,
         )
-        self.balls.append(ball)
+        self.spawn_pending.append({"frames": TELEGRAPH_FRAMES, "ball": ball})
 
     def _emit_audio(self, name):
         self.pending_audio_events.append(str(name))
@@ -378,6 +412,7 @@ class GameEngine:
             "miss": {"speed": (1.0, 2.6), "life": (10, 16), "size": (1, 3)},
         }.get(preset, {"speed": (1.4, 4.6), "life": (12, 20), "size": (2, 4)})
         n = int((10 + min(25, multiplier * 6)) * burst_mult)
+        n = max(2, n)
         # Same color as the ball; particles share it and fade via draw_confetti.
         burst_color = color
 
@@ -402,6 +437,57 @@ class GameEngine:
         # Prevent unbounded growth in case of rapid hits.
         if len(self.confetti_particles) > 800:
             self.confetti_particles = self.confetti_particles[-800:]
+
+    def _spawn_pop_burst(self, x, y, combo_for_scale: int):
+        """White ~80% opacity particles; count & speed scale lightly with combo."""
+        ml = POP_BURST_FRAMES
+        n = random.randint(DT.POP_PARTICLE_MIN, DT.POP_PARTICLE_MAX)
+        mult = 1.0 + min(0.4, max(0, int(combo_for_scale) - 1) * 0.13)
+        wcol = tuple(int(c * DT.POP_PARTICLE_WHITE) for c in DT.C_WHITE)
+        for _ in range(n):
+            ang = random.uniform(0, math.pi * 2)
+            spd = random.uniform(4.0, 9.0) * mult
+            self.pop_particles.append(
+                {
+                    "x": float(x),
+                    "y": float(y),
+                    "vx": math.cos(ang) * spd,
+                    "vy": math.sin(ang) * spd,
+                    "life": ml,
+                    "max_life": ml,
+                    "r0": random.uniform(3.0, 6.0),
+                    "color": wcol,
+                }
+            )
+        if len(self.pop_particles) > 400:
+            self.pop_particles = self.pop_particles[-400:]
+
+    def update_pop_particles(self):
+        alive = []
+        for p in self.pop_particles:
+            p["vx"] *= 0.88
+            p["vy"] *= 0.88
+            p["vy"] += 0.11
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
+            p["life"] -= 1
+            if p["life"] > 0:
+                alive.append(p)
+        self.pop_particles = alive
+
+    def _tick_spawn_pending(self):
+        if not self.spawn_pending:
+            return
+        nxt = []
+        for item in self.spawn_pending:
+            item["frames"] -= 1
+            if item["frames"] <= 0:
+                b = item["ball"]
+                b.spawn_time = time.perf_counter()
+                self.balls.append(b)
+            else:
+                nxt.append(item)
+        self.spawn_pending = nxt
 
     def update_confetti(self):
         alive = []
@@ -429,8 +515,29 @@ class GameEngine:
             return
 
         self.frame_count += 1
+        # Keep telegraphs advancing during hit-stop (combo freeze is only 1–2 frames)
+        if self.countdown_frames <= 0 and not self.level_transition_pending:
+            self._tick_spawn_pending()
         self.update_confetti()
+        self.update_pop_particles()
         self.update_floating_texts()
+        self._update_near_miss_sparks()
+
+        if self.play_level > 2:
+            self.hint_bar_opacity = max(0.0, self.hint_bar_opacity - 1.0 / 60.0)
+        else:
+            self.hint_bar_opacity = 1.0
+
+        if self.combo_pulse_frames > 0:
+            self.combo_pulse_frames -= 1
+        if self.combo_flash_frames > 0:
+            self.combo_flash_frames -= 1
+        if self.life_loss_overlay_frames > 0:
+            self.life_loss_overlay_frames -= 1
+        if self.life_loss_anim_frames > 0:
+            self.life_loss_anim_frames -= 1
+        if self.goal_flash_frames > 0:
+            self.goal_flash_frames -= 1
 
         if self.combo_milestone is not None:
             self.combo_milestone["frames"] -= 1
@@ -441,8 +548,6 @@ class GameEngine:
             self.juice_rim_frames -= 1
         if self.quiet_frames > 0:
             self.quiet_frames -= 1
-        if self.shake_frames > 0:
-            self.shake_frames -= 1
         if self.hit_stop_frames > 0:
             self.hit_stop_frames -= 1
             return
@@ -470,10 +575,13 @@ class GameEngine:
 
         now = time.perf_counter()
         for ball in self.balls:
+            if getattr(ball, "_near_miss_cd", 0) > 0:
+                ball._near_miss_cd -= 1
             ball.update()
             self._apply_fairness_bounce(ball, now)
 
         self.check_collisions(hands)
+        self._check_near_misses(hands)
 
         self.remove_offscreen_balls()
         self._tick_missions()
@@ -520,6 +628,47 @@ class GameEngine:
             ball.y = max_y - eps
             ball.vy = -abs(ball.vy) * damp
 
+    def _spawn_near_miss(self, hx, hy, bx, by):
+        ang = math.atan2(by - hy, bx - hx)
+        for _ in range(DT.NEAR_MISS_SPARK_COUNT):
+            a = ang + random.uniform(-0.4, 0.4)
+            spd = random.uniform(1.4, 3.6)
+            self.near_miss_sparks.append(
+                {
+                    "x": float(hx),
+                    "y": float(hy),
+                    "vx": math.cos(a) * spd,
+                    "vy": math.sin(a) * spd,
+                    "life": DT.DUR_NEAR_MISS_SPARK,
+                    "max_life": DT.DUR_NEAR_MISS_SPARK,
+                    "r": 2,
+                }
+            )
+        if len(self.near_miss_sparks) > 200:
+            self.near_miss_sparks = self.near_miss_sparks[-200:]
+
+    def _update_near_miss_sparks(self):
+        alive = []
+        for p in self.near_miss_sparks:
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
+            p["life"] -= 1
+            if p["life"] > 0:
+                alive.append(p)
+        self.near_miss_sparks = alive
+
+    def _check_near_misses(self, hands):
+        for ball in self.balls:
+            for hand in hands:
+                dist = math.hypot(ball.x - hand["x"], ball.y - hand["y"])
+                hit_r = ball.radius + hand["radius"]
+                if dist >= hit_r and dist < DT.NEAR_MISS_DIST_MULT * hit_r:
+                    if getattr(ball, "_near_miss_cd", 0) <= 0:
+                        self._spawn_near_miss(
+                            hand["x"], hand["y"], ball.x, ball.y
+                        )
+                        ball._near_miss_cd = 12
+                    break
 
     def check_collisions(self, hands):
 
@@ -542,10 +691,21 @@ class GameEngine:
                         self.run_health_pops += 1
                         self.juice_rim_frames = max(self.juice_rim_frames, 14)
                         self.quiet_frames = max(self.quiet_frames, 36)
+                        self.shake_keyed = False
                         self.shake_frames = max(self.shake_frames, 6)
                         self.shake_strength = max(self.shake_strength, 1.4)
                         self._emit_audio("health")
+                        self._spawn_pop_burst(ball.x, ball.y, self.combo)
+                        self.spawn_confetti(
+                            ball.x,
+                            ball.y,
+                            self.multiplier,
+                            ball.color,
+                            burst_mult=0.18,
+                            preset="health",
+                        )
                         self.floating_texts.append({
+                            "kind": "event",
                             "text": "LIFE!",
                             "x": float(ball.x),
                             "y": float(ball.y) - 8,
@@ -565,22 +725,35 @@ class GameEngine:
                         self.multiplier = 1 + (self.combo // 5)
                         pts = self.multiplier
                         self.score += pts
-                        self.floating_texts.append({
-                            "text": f"+{pts}",
-                            "x": float(ball.x),
-                            "y": float(ball.y) - float(ball.radius) * 0.35,
-                            "vx": random.uniform(-0.35, 0.35),
-                            "vy": -1.25,
-                            "life": 40,
-                            "max_life": 40,
-                            "color": (140, 230, 255),
-                            "scale": 0.68,
-                        })
+                        self.combo_last_pop_frame = self.frame_count
+                        self.combo_pulse_frames = DT.COMBO_PULSE_FRAMES
+                        self._spawn_pop_burst(ball.x, ball.y, self.combo)
+                        pop_col = (
+                            DT.C_WHITE if self.combo < 3 else DT.C_AMBER
+                        )
+                        self.floating_texts.append(
+                            {
+                                "kind": "score_popup",
+                                "text": f"+{pts}",
+                                "x": float(ball.x),
+                                "y": float(ball.y) - float(ball.radius) * 0.35,
+                                "vx": random.uniform(-0.15, 0.15),
+                                "vy": -(DT.SCORE_POP_DRIFT_PX / float(DT.DUR_SCORE_POP)),
+                                "life": DT.DUR_SCORE_POP,
+                                "max_life": DT.DUR_SCORE_POP,
+                                "color": pop_col,
+                                "scale": 0.74,
+                            }
+                        )
                         if self.multiplier > old_mult:
                             self.combo_milestone = {"frames": 52, "multiplier": self.multiplier}
+                            self.combo_flash_frames = max(
+                                self.combo_flash_frames, DT.DUR_COMBO_FLASH
+                            )
                             self.juice_rim_frames = max(self.juice_rim_frames, 22)
                             self.quiet_frames = max(self.quiet_frames, 20)
                             self.hit_stop_frames = max(self.hit_stop_frames, 2)
+                            self.shake_keyed = False
                             self.shake_frames = max(self.shake_frames, 10)
                             self.shake_strength = max(self.shake_strength, 3.2)
                             self._emit_audio("combo_up")
@@ -589,33 +762,37 @@ class GameEngine:
                                 ball.y,
                                 self.multiplier + 2,
                                 (100, 210, 255),
-                                burst_mult=1.55,
+                                burst_mult=1.35,
                                 preset="combo",
                             )
                         else:
                             self._emit_audio("pop")
+                            self.spawn_confetti(
+                                ball.x,
+                                ball.y,
+                                self.multiplier,
+                                ball.color,
+                                burst_mult=0.22,
+                                preset="normal",
+                            )
                         if self.score > old_best:
                             self.juice_rim_frames = max(self.juice_rim_frames, 30)
                             self.quiet_frames = max(self.quiet_frames, 44)
                             self._emit_audio("new_best")
-                            self.floating_texts.append({
-                                "text": "NEW BEST!",
-                                "x": float(self.width) * 0.5,
-                                "y": float(self.height) * 0.22,
-                                "vx": 0.0,
-                                "vy": -0.45,
-                                "life": 55,
-                                "max_life": 55,
-                                "color": (180, 255, 255),
-                                "scale": 0.62,
-                            })
-                    self.spawn_confetti(
-                        ball.x,
-                        ball.y,
-                        self.multiplier,
-                        ball.color,
-                        preset="health" if ball.is_health_ball else "normal",
-                    )
+                            self.floating_texts.append(
+                                {
+                                    "kind": "event",
+                                    "text": "NEW BEST!",
+                                    "x": float(self.width) * 0.5,
+                                    "y": float(self.height) * 0.22,
+                                    "vx": 0.0,
+                                    "vy": -0.45,
+                                    "life": 55,
+                                    "max_life": 55,
+                                    "color": (180, 255, 255),
+                                    "scale": 0.62,
+                                }
+                            )
                     hit = True
                     break
 
@@ -654,6 +831,7 @@ class GameEngine:
                 self.lives_left -= 1
                 self.run_misses += 1
                 self.floating_texts.append({
+                    "kind": "event",
                     "text": "-1",
                     "x": float(self.width) / 2,
                     "y": float(self.height) * 0.36,
@@ -672,8 +850,15 @@ class GameEngine:
                     self._emit_audio("game_over")
                 else:
                     self._emit_audio("miss")
-                self.shake_frames = max(self.shake_frames, 8)
-                self.shake_strength = max(self.shake_strength, 2.6)
+                self.shake_keyed = True
+                self.shake_frames = len(SHAKE_OFFSETS)
+                self.shake_strength = 1.0
+                self.life_loss_overlay_frames = max(
+                    self.life_loss_overlay_frames, DT.DUR_LIFE_LOSS_FLASH
+                )
+                self.life_loss_anim_frames = max(
+                    self.life_loss_anim_frames, DT.DUR_HEART_LOSS_ANIM
+                )
                 removed_any = True
             else:
                 # Keep the ball around until it has had time to "exist"
