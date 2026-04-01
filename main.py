@@ -166,7 +166,7 @@ def main():
                         game.start_countdown(72)
                 else:
                     steady_hands_frames = 0
-                renderer.draw_frame(
+                frame = renderer.draw_frame(
                     frame,
                     {
                         "mode": "pregame",
@@ -212,7 +212,7 @@ def main():
                 game.update(hands)
                 while game.pending_audio_events:
                     sound.play(game.pending_audio_events.pop(0))
-                renderer.draw_frame(
+                frame = renderer.draw_frame(
                     frame,
                     {
                         "mode": "play",

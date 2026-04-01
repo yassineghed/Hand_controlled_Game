@@ -77,19 +77,23 @@ def blend_circle(frame, center, radius, color, alpha, filled=True, thickness=1):
 
 def draw_rounded_rect(frame, x, y, w, h, r, color, alpha, filled=True):
     overlay = frame.copy()
-    t = -1 if filled else 1
-    cv2.circle(overlay, (x+r, y+r),     r, color, t, cv2.LINE_AA)
-    cv2.circle(overlay, (x+w-r, y+r),   r, color, t, cv2.LINE_AA)
-    cv2.circle(overlay, (x+r, y+h-r),   r, color, t, cv2.LINE_AA)
-    cv2.circle(overlay, (x+w-r, y+h-r), r, color, t, cv2.LINE_AA)
     if filled:
+        cv2.circle(overlay, (x+r,   y+r),   r, color, -1, cv2.LINE_AA)
+        cv2.circle(overlay, (x+w-r, y+r),   r, color, -1, cv2.LINE_AA)
+        cv2.circle(overlay, (x+r,   y+h-r), r, color, -1, cv2.LINE_AA)
+        cv2.circle(overlay, (x+w-r, y+h-r), r, color, -1, cv2.LINE_AA)
         cv2.rectangle(overlay, (x+r, y),   (x+w-r, y+h), color, -1)
         cv2.rectangle(overlay, (x, y+r),   (x+w, y+h-r), color, -1)
     else:
-        cv2.line(overlay, (x+r, y),   (x+w-r, y),   color, 1, cv2.LINE_AA)
-        cv2.line(overlay, (x+r, y+h), (x+w-r, y+h), color, 1, cv2.LINE_AA)
-        cv2.line(overlay, (x, y+r),   (x, y+h-r),   color, 1, cv2.LINE_AA)
-        cv2.line(overlay, (x+w, y+r), (x+w, y+h-r), color, 1, cv2.LINE_AA)
+        # Quarter-arc per corner (not full circles)
+        cv2.ellipse(overlay, (x+r,   y+r),   (r, r), 0, 180, 270, color, 1, cv2.LINE_AA)
+        cv2.ellipse(overlay, (x+w-r, y+r),   (r, r), 0, 270, 360, color, 1, cv2.LINE_AA)
+        cv2.ellipse(overlay, (x+r,   y+h-r), (r, r), 0,  90, 180, color, 1, cv2.LINE_AA)
+        cv2.ellipse(overlay, (x+w-r, y+h-r), (r, r), 0,   0,  90, color, 1, cv2.LINE_AA)
+        cv2.line(overlay, (x+r,   y),     (x+w-r, y),     color, 1, cv2.LINE_AA)
+        cv2.line(overlay, (x+r,   y+h),   (x+w-r, y+h),   color, 1, cv2.LINE_AA)
+        cv2.line(overlay, (x,     y+r),   (x,     y+h-r), color, 1, cv2.LINE_AA)
+        cv2.line(overlay, (x+w,   y+r),   (x+w,   y+h-r), color, 1, cv2.LINE_AA)
     cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
 
 
@@ -156,10 +160,6 @@ def draw_ball_with_trail(frame, ball):
                 alpha=TRAIL_ALPHAS[min(i, len(TRAIL_ALPHAS) - 1)],
                 filled=True,
             )
-    cx = int(getattr(ball, "cx", getattr(ball, "x", 0)))
-    cy = int(getattr(ball, "cy", getattr(ball, "y", 0)))
-    is_health = bool(getattr(ball, "is_health", getattr(ball, "is_health_ball", False)))
-    draw_ball(frame, cx, cy, ball.radius, is_health)
 
 
 def draw_urgency_halo(frame, ball, fw, fh):
