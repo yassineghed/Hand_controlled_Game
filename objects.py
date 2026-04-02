@@ -60,7 +60,7 @@ def _cap_cross_vs_in(v_in, v_cross, max_ratio=0.88):
 def _speed_mult(difficulty):
     """Soft cap — tuned for webcam + hand tracking reaction time."""
     d = max(0.5, float(difficulty))
-    return min(2.35, d)
+    return min(1.85, d)
 
 
 # Global scale on top of difficulty (pixels/frame feel ~30% slower than before).
@@ -86,7 +86,7 @@ class Ball:
 
         difficulty = max(0.5, float(difficulty))
         spd = _speed_mult(difficulty)
-        cross_scale = 0.72 + 0.28 * min(difficulty / 3.0, 1.0)
+        cross_scale = 0.55 + 0.25 * min(difficulty / 3.0, 1.0)
 
         self.spawn_time = float(spawn_time)
         self.min_visible_seconds = float(min_visible_seconds)

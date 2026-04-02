@@ -210,7 +210,7 @@ class GameEngine:
             "Expert": 0.18,
             "Master": 0.24,
         }.get(self.stage_name, 0.0)
-        return min(3.3, 1.0 + max(0, self.score) / 42.0 + tier_bonus)
+        return min(3.3, 1.0 + max(0, self.score) / 70.0 + tier_bonus)
 
     def _xp_needed(self, level=None):
         lv = self.level if level is None else int(level)

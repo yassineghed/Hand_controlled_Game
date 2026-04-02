@@ -1,5 +1,6 @@
 import math
 import random
+from collections import deque
 
 import cv2
 import numpy as np
@@ -532,6 +533,7 @@ class Renderer:
     def __init__(self):
         self.dimmer = AdaptiveDimmer()
         self.hint_alpha = 1.0
+        self._hand_trails = deque(maxlen=12)  # past hand positions, one list per frame
 
     def draw_frame(self, frame, state):
         frame = self.dimmer.apply(frame)
@@ -597,7 +599,17 @@ class Renderer:
             is_health = bool(getattr(b, "is_health", getattr(b, "is_health_ball", False)))
             draw_ball(frame, cx, cy, int(b.radius), is_health)
 
-        # L5 — hand rings
+        # L5 — hand sparkle trail + rings
+        cur_hands = [(int(cx), int(cy)) for (cx, cy, *_) in state.get("hand_positions", [])]
+        self._hand_trails.append(cur_hands)
+        trail_list = list(self._hand_trails)
+        n = len(trail_list)
+        for i, positions in enumerate(trail_list[:-1]):  # skip current frame (drawn as ring)
+            t = i / max(n - 1, 1)           # 0 = oldest, ~1 = one frame before current
+            alpha = t * 0.38
+            r = max(1, int(2 + 7 * t))
+            for (px, py) in positions:
+                blend_circle(frame, (px, py), r, C_AMBER, alpha=alpha, filled=True)
         draw_hand_rings(frame, state.get("hand_positions", []))
 
         # L6 — particles + flashes
