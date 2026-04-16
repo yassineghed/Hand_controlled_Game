@@ -1,0 +1,2 @@
+- [Game vision](project_game_vision.md) — targeting Subway-Surfers-level feel; current game is too slow/boring for the creator
+- [Prefers hard over easy](feedback_difficulty.md) — default to intense/fast/risky design choices, not accessibility padding
