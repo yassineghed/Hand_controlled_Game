@@ -845,7 +845,7 @@ class Renderer:
                 self.hint_alpha = max(0.0, self.hint_alpha - 1 / 60)
         draw_hint_bar(
             frame, w, h,
-            [("[M]", "reroll"), ("[N]", "next"), ("[R]", "restart"), ("[Esc]", "quit")],
+            [("[F]", "fullscreen"), ("[M]", "reroll"), ("[N]", "next"), ("[R]", "restart"), ("[Esc]", "quit")],
             alpha=self.hint_alpha,
         )
 

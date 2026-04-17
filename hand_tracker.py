@@ -57,20 +57,22 @@ class HandTracker:
         with self._lock:
             self._last_hands = hands
 
+    def _submit_frame(self, frame):
+        h, w = frame.shape[:2]
+        small = cv2.resize(frame, (w // 2, h // 2))
+        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        ts = max(self._last_ts + 1, int(time.perf_counter() * 1000))
+        self._last_ts = ts
+        self.landmarker.detect_async(mp_image, ts)
+
     def detect(self, frame):
         h, w = frame.shape[:2]
         self._frame_w = w
         self._frame_h = h
 
-        # Half resolution — 4x fewer pixels, landmarks are normalized so coords still map correctly
-        small = cv2.resize(frame, (w // 2, h // 2))
-        rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-
-        # Monotonically increasing ms timestamp required by LIVE_STREAM mode
-        ts = max(self._last_ts + 1, int(time.perf_counter() * 1000))
-        self._last_ts = ts
-        self.landmarker.detect_async(mp_image, ts)
+        # Submit frame for detection in background — never blocks the game loop
+        threading.Thread(target=self._submit_frame, args=(frame,), daemon=True).start()
 
         with self._lock:
             return list(self._last_hands)

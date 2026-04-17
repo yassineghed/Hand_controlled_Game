@@ -12,7 +12,8 @@ import renderer
 
 
 MODEL_PATH = "hand_landmarker.task"
-CAM_W, CAM_H = 1280, 720
+CAM_W, CAM_H = 1600, 1220
+CAM_FPS = 60
 
 
 def _resolve_model_path(rel_or_abs: str) -> Path:
@@ -39,6 +40,7 @@ def _open_webcam(width: int, height: int):
                 continue
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, CAM_FPS)
             ok_any = False
             for _ in range(8):
                 ok, frame = cap.read()
@@ -58,6 +60,15 @@ def _load_tracker_async(model_path: str, out: dict):
         out["tracker"] = HandTracker(model_path)
     except Exception as e:
         out["error"] = e
+
+
+def _set_fullscreen(window_name: str, enabled: bool):
+    """Best-effort fullscreen toggle across OpenCV backends."""
+    try:
+        mode = cv2.WINDOW_FULLSCREEN if enabled else cv2.WINDOW_NORMAL
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, mode)
+    except cv2.error:
+        pass
 
 
 def main():
@@ -86,7 +97,11 @@ def main():
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        cv2.namedWindow("Hand Game", cv2.WINDOW_AUTOSIZE)
+        window_name = "Hand Game"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, min(1600, max(1100, width)), min(1000, max(700, height)))
+        fullscreen = True
+        _set_fullscreen(window_name, fullscreen)
 
         load_state = {"tracker": None, "error": None}
         threading.Thread(
@@ -125,7 +140,7 @@ def main():
                     "hint_alpha": 1.0,
                 },
             )
-            cv2.imshow("Hand Game", screen)
+            cv2.imshow(window_name, screen)
             cv2.waitKey(16)
             tick += 1
 
@@ -280,12 +295,15 @@ def main():
                 if game.shake_frames > 0:
                     game.shake_frames -= 1
 
-            cv2.imshow("Hand Game", frame)
+            cv2.imshow(window_name, frame)
             ui_tick += 1
 
             key = cv2.waitKey(1) & 0xFF
             if key == 27:
                 break
+            if key in (ord("f"), ord("F")):
+                fullscreen = not fullscreen
+                _set_fullscreen(window_name, fullscreen)
             if key in (ord("n"), ord("N")) and not game.game_over:
                 game.force_next_level()
             if key in (ord("m"), ord("M")) and not game.game_over:

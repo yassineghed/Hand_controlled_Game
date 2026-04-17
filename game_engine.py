@@ -505,15 +505,20 @@ class GameEngine:
         })
         self._emit_audio("mission")
 
-    def _z_speed(self, diff: float, variance: float = 0.0) -> float:
+    def _z_speed(self, diff: float, variance: float = 0.0, lane: int = None) -> float:
         """variance in [-1, 1] adds ±22% speed randomness."""
         t = min((diff - 1.0) / 10.0, 1.0)
-        travel_frames = 54.0 - 40.0 * t  # 54f at diff=1 → 14f at diff=11+
+        # Softer baseline speed: ~66f at diff=1 and ~26f at diff=11+.
+        travel_frames = 66.0 - 40.0 * t
         if self.rage_mode:
-            travel_frames *= 0.72
+            # Keep rage mode intense but not unfair.
+            travel_frames *= 0.85
         speed = 1.0 / travel_frames
         speed *= 1.0 + variance * 0.22
-        return max(speed, 1.0 / 14.0)
+        # Center lane has less lateral motion cue, so make it a little slower.
+        if lane == 1:
+            speed *= 0.88
+        return max(speed, 1.0 / 26.0)
 
     def _pick_ball_type(self, diff: float) -> str:
         r = random.random()
@@ -534,7 +539,7 @@ class GameEngine:
         variance = random.uniform(-1.0, 1.0)
         ball = Ball(
             lane=lane,
-            z_speed=self._z_speed(diff, variance),
+            z_speed=self._z_speed(diff, variance, lane),
             spawn_time=time.perf_counter(),
             ball_type=ball_type,
         )
@@ -546,24 +551,25 @@ class GameEngine:
     def spawn_ball(self, force_lane: int = None, force_type: str = None):
         diff = self.difficulty()
 
-        # Full-lane wave at high difficulty
-        if diff >= 4.0 and random.random() < 0.14 and self.burst_cooldown <= 0:
+        # Full-lane wave appears later and less often to avoid overload.
+        wave_chance = min(0.11, max(0.0, (diff - 5.5) * 0.025))
+        if diff >= 5.5 and random.random() < wave_chance and self.burst_cooldown <= 0:
             for l in range(LaneSystem.LANE_COUNT):
                 self.balls.append(self._make_ball(l, diff))
-            self.burst_cooldown = 18
+            self.burst_cooldown = 24
             return
 
         lane = force_lane if force_lane is not None else random.randint(0, LaneSystem.LANE_COUNT - 1)
         ball = self._make_ball(lane, diff, force_type)
         self.balls.append(ball)
 
-        # Multi-spawn: second ball in different lane
-        multi_chance = 0.55 if diff >= 3.0 else 0.28
+        # Multi-spawn ramps up with difficulty instead of peaking too early.
+        multi_chance = min(0.46, 0.18 + max(0.0, diff - 2.0) * 0.055)
         if random.random() < multi_chance and self.burst_cooldown <= 0:
             other_lanes = [l for l in range(LaneSystem.LANE_COUNT) if l != lane]
             lane2 = random.choice(other_lanes)
             self.balls.append(self._make_ball(lane2, diff))
-            self.burst_cooldown = 8
+            self.burst_cooldown = 10
 
     def _emit_audio(self, name):
         self.pending_audio_events.append(str(name))
@@ -774,8 +780,8 @@ class GameEngine:
 
         self.spawn_timer += 1
         diff = self.difficulty()
-        # Aggressive ramp: 42f at diff=1 → 7f floor at diff=8+
-        spawn_interval = int(max(7, 42 - diff * 5))
+        # Softer spawn ramp: 48f at diff=1, floor 12f at high diff.
+        spawn_interval = int(max(12, 52 - diff * 4))
 
         if self.spawn_timer > spawn_interval:
             self.spawn_ball()
@@ -829,7 +835,7 @@ class GameEngine:
 
     def _check_near_misses(self, hands):
         for ball in self.balls:
-            if ball.z < 0.45:
+            if ball.z < 0.40:
                 continue
             for hand in hands:
                 dist = math.hypot(ball.x - hand["x"], ball.y - hand["y"])
@@ -866,8 +872,8 @@ class GameEngine:
 
             hit = False
 
-            # Only hittable once ball is visible and large enough (z >= 0.45)
-            if ball.z < 0.45:
+            # Make interception window wider for hand-tracking gameplay.
+            if ball.z < 0.36:
                 remaining_balls.append(ball)
                 continue
 
@@ -1027,7 +1033,7 @@ class GameEngine:
         removed_any = False
 
         for ball in self.balls:
-            if ball.z < 1.05:
+            if ball.z < 1.12:
                 remaining.append(ball)
                 continue
 
