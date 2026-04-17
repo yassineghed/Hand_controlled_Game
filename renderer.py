@@ -127,24 +127,32 @@ class AdaptiveDimmer:
         return frame
 
 
-def draw_ball(frame, cx, cy, r, is_health=False):
-    body = (140, 195, 100) if is_health else (180, 150, 170)  # BGR
-    # Body
-    blend_circle(frame, (cx, cy), r, body, alpha=0.75, filled=True)
-    # White highlight offset up-left (sphere illusion)
-    blend_circle(
-        frame,
-        (cx - int(r * 0.28), cy - int(r * 0.24)),
-        int(r * 0.52),
-        C_WHITE,
-        alpha=0.55,
-        filled=True,
-    )
-    # Thin border
-    blend_circle(frame, (cx, cy), r, C_WHITE, alpha=0.08, filled=False)
-    # Health ball: extra mint ring
-    if is_health:
+def draw_ball(frame, cx, cy, r, is_health=False, ball_type="normal"):
+    if ball_type == "bomb":
+        body = (25, 25, 180)   # deep red
+        blend_circle(frame, (cx, cy), r, body, alpha=0.90, filled=True)
+        # Dark highlight
+        blend_circle(frame, (cx - int(r * 0.25), cy - int(r * 0.22)), int(r * 0.4), (60, 60, 200), alpha=0.45, filled=True)
+        # Danger ring
+        blend_circle(frame, (cx, cy), r + 3, (40, 40, 220), alpha=0.55, filled=False, thickness=2)
+        blend_circle(frame, (cx, cy), r, C_WHITE, alpha=0.06, filled=False)
+    elif ball_type == "gold":
+        body = (25, 185, 255)  # gold BGR
+        blend_circle(frame, (cx, cy), r, body, alpha=0.85, filled=True)
+        blend_circle(frame, (cx - int(r * 0.28), cy - int(r * 0.24)), int(r * 0.52), C_WHITE, alpha=0.65, filled=True)
+        blend_circle(frame, (cx, cy), r + 2, (30, 200, 255), alpha=0.40, filled=False, thickness=2)
+        blend_circle(frame, (cx, cy), r, C_WHITE, alpha=0.10, filled=False)
+    elif is_health or ball_type == "health":
+        body = (140, 195, 100)
+        blend_circle(frame, (cx, cy), r, body, alpha=0.75, filled=True)
+        blend_circle(frame, (cx - int(r * 0.28), cy - int(r * 0.24)), int(r * 0.52), C_WHITE, alpha=0.55, filled=True)
+        blend_circle(frame, (cx, cy), r, C_WHITE, alpha=0.08, filled=False)
         blend_circle(frame, (cx, cy), r + 4, C_MINT, alpha=0.30, filled=False)
+    else:
+        body = (180, 150, 170)
+        blend_circle(frame, (cx, cy), r, body, alpha=0.75, filled=True)
+        blend_circle(frame, (cx - int(r * 0.28), cy - int(r * 0.24)), int(r * 0.52), C_WHITE, alpha=0.55, filled=True)
+        blend_circle(frame, (cx, cy), r, C_WHITE, alpha=0.08, filled=False)
 
 
 def draw_ball_with_trail(frame, ball):
@@ -163,19 +171,26 @@ def draw_ball_with_trail(frame, ball):
             )
 
 
-def draw_urgency_halo(frame, ball, fw, fh):
-    margins = [ball.x / fw, ball.y / fh, (fw - ball.x) / fw, (fh - ball.y) / fh]
-    m = min(margins)
-    if m < 0.20:
-        intensity = 1.0 - (m / 0.20)
-        blend_circle(
-            frame,
-            (int(ball.x), int(ball.y)),
-            ball.radius + int(intensity * 10),
-            C_ROSE,
-            alpha=0.15 + intensity * 0.25,
-            filled=True,
-        )
+def draw_lane_rails(frame, lane_info: dict):
+    """Draw perspective converging lines for the 3 lanes."""
+    if not lane_info:
+        return
+    vp_x = int(lane_info["vp_x"])
+    vp_y = int(lane_info["vp_y"])
+    player_y = int(lane_info["player_y"])
+    lane_x_near = lane_info["lane_x_near"]
+    w = int(lane_info["width"])
+
+    overlay = frame.copy()
+    # Outer edges at screen sides
+    edge_xs = [0, w]
+    all_xs = [int(lx) for lx in lane_x_near] + edge_xs
+    for bx in all_xs:
+        cv2.line(overlay, (vp_x, vp_y), (bx, player_y), C_WHITE, 1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.12, frame, 0.88, 0, frame)
+
+    # Subtle horizontal horizon line
+    blend(frame, C_WHITE, 0.06, 0, vp_y - 1, w, vp_y + 1)
 
 
 def draw_score_panel(frame, score, best_score):
@@ -576,28 +591,34 @@ class Renderer:
             if pct > 0:
                 blend(frame, C_MINT, 0.75, bar_x, bar_y, bar_x + int(bar_w * pct), bar_y + 6)
 
-        # L2 — spawn telegraphs (edge strips before balls enter)
-        draw_spawn_telegraphs(
-            frame,
-            state.get("spawn_pending", []),
-            state.get("ui_tick", 0),
-        )
+        # L2 — lane rails (perspective converging lines)
+        draw_lane_rails(frame, state.get("lane_info", {}))
 
         # L2.1 — life loss rose overlay
         draw_life_loss_overlay(frame, int(state.get("life_loss_overlay_frames", 0)))
 
-        # L3 — trails
+        # L3 — balls (depth cue from size growth; approach glow near player)
         for b in state.get("balls", []):
-            draw_ball_with_trail(frame, b)
-
-        # L4 — urgency halo + balls
-        for b in state.get("balls", []):
-            if hasattr(b, "x"):
-                draw_urgency_halo(frame, b, w, h)
             cx = int(getattr(b, "cx", getattr(b, "x", 0)))
             cy = int(getattr(b, "cy", getattr(b, "y", 0)))
-            is_health = bool(getattr(b, "is_health", getattr(b, "is_health_ball", False)))
-            draw_ball(frame, cx, cy, int(b.radius), is_health)
+            btype = str(getattr(b, "ball_type", "normal"))
+            is_health = btype == "health"
+            z = float(getattr(b, "z", 1.0))
+            # Approach glow kicks in at z > 0.60
+            if z > 0.60:
+                t = (z - 0.60) / 0.40
+                glow_r = int(b.radius * (1.0 + 0.55 * t))
+                glow_a = 0.08 + 0.28 * t
+                if btype == "bomb":
+                    glow_col = (30, 30, 220)
+                elif btype == "gold":
+                    glow_col = (30, 200, 255)
+                elif is_health:
+                    glow_col = C_MINT
+                else:
+                    glow_col = C_ROSE
+                blend_circle(frame, (cx, cy), glow_r, glow_col, alpha=glow_a, filled=True)
+            draw_ball(frame, cx, cy, int(b.radius), is_health, btype)
 
         # L5 — hand sparkle trail + rings
         cur_hands = [(int(cx), int(cy)) for (cx, cy, *_) in state.get("hand_positions", [])]
@@ -612,9 +633,36 @@ class Renderer:
                 blend_circle(frame, (px, py), r, C_AMBER, alpha=alpha, filled=True)
         draw_hand_rings(frame, state.get("hand_positions", []))
 
+        # L5.5 — lane indicator: highlight which lane each hand is in
+        lane_info = state.get("lane_info", {})
+        if lane_info:
+            vp_x = int(lane_info["vp_x"])
+            vp_y = int(lane_info["vp_y"])
+            player_y = int(lane_info["player_y"])
+            lane_x_near = lane_info["lane_x_near"]
+            lw3 = w / 3.0
+            for (hx, hy, *_) in state.get("hand_positions", []):
+                hl = 0 if hx < lw3 else (1 if hx < lw3 * 2 else 2)
+                lnx = int(lane_x_near[hl])
+                # Fill the triangle for the active lane
+                pts = np.array([[vp_x, vp_y], [lnx - 30, player_y], [lnx + 30, player_y]], np.int32)
+                ov = frame.copy()
+                cv2.fillPoly(ov, [pts], C_WHITE)
+                cv2.addWeighted(ov, 0.06, frame, 0.94, 0, frame)
+
         # L6 — particles + flashes
         draw_particles(frame, state.get("particles", []))
         draw_flashes(frame, state.get("shake_frames", 0), state.get("combo_flash_frames", 0))
+
+        # L6.5 — rage mode overlay (pulsing red-orange tint)
+        if state.get("rage_mode", False):
+            ui_tick = int(state.get("ui_tick", 0))
+            pulse = 0.5 + 0.5 * math.sin(ui_tick * 0.25)
+            rage_a = 0.06 + 0.08 * pulse
+            blend(frame, (30, 30, 220), rage_a, 0, 0, w, h)
+        rage_flash = int(state.get("rage_flash_frames", 0))
+        if rage_flash > 0:
+            blend(frame, (30, 80, 255), 0.25 * (rage_flash / 30.0), 0, 0, w, h)
 
         # L7 — score popups
         draw_score_popups(frame, state.get("popups", []))

@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from objects import Ball
+from lane_system import LaneSystem
 
 import design_tokens as DT
 
@@ -90,6 +91,7 @@ class GameEngine:
     def __init__(self, width, height):
         self.width = width
         self.height = height
+        self.lane_system = LaneSystem(width, height)
 
         self.balls = []
         self.score = 0
@@ -106,11 +108,13 @@ class GameEngine:
         self.lives_left = self.lives_max
         self.game_over = False
 
-        self.spawn_timer = 0
-        self.base_spawn_interval = 52
-
-        self.min_ball_visible_seconds = 3 / 5
-        self.min_ball_travel_fraction = 0.15
+        # Start near threshold so first ball spawns almost immediately
+        self.spawn_timer = 42
+        self.game_start_time = time.perf_counter()
+        self.rage_mode = False
+        self.rage_flash_frames = 0
+        self.combo_decay_timer = 0
+        self.burst_cooldown = 0
 
         self.confetti_particles = []
         self.confetti_gravity = 0.35
@@ -163,7 +167,12 @@ class GameEngine:
         self.multiplier = 1
         self.lives_left = self.lives_max
         self.game_over = False
-        self.spawn_timer = 0
+        self.spawn_timer = 42
+        self.game_start_time = time.perf_counter()
+        self.rage_mode = False
+        self.rage_flash_frames = 0
+        self.combo_decay_timer = 0
+        self.burst_cooldown = 0
         self.confetti_particles = []
         self.pop_particles = []
         self.spawn_pending = []
@@ -203,14 +212,14 @@ class GameEngine:
 
 
     def difficulty(self):
-        # Scale with score + account level tiers; still clamped for fairness.
         tier_bonus = {
             "Rookie": 0.00,
-            "Skilled": 0.10,
-            "Expert": 0.18,
-            "Master": 0.24,
+            "Skilled": 0.15,
+            "Expert": 0.28,
+            "Master": 0.42,
         }.get(self.stage_name, 0.0)
-        return min(3.3, 1.0 + max(0, self.score) / 70.0 + tier_bonus)
+        elapsed = time.perf_counter() - self.game_start_time
+        return min(5.5, 1.0 + max(self.score / 25.0, elapsed / 20.0) + tier_bonus)
 
     def _xp_needed(self, level=None):
         lv = self.level if level is None else int(level)
@@ -382,20 +391,58 @@ class GameEngine:
         }
 
 
-    def spawn_ball(self):
-        # Health pickups only after at least one heart lost (still at full lives = no + balls).
-        can_health = self.lives_left < self.lives_max
-        is_health = can_health and random.random() < 0.15
+    def _z_speed(self, diff: float, variance: float = 0.0) -> float:
+        """variance in [-1, 1] adds ±25% speed randomness."""
+        t = min((diff - 1.0) / 4.5, 1.0)
+        travel_frames = 55.0 - 27.0 * t  # 55f at diff=1, 28f at diff=5.5
+        if self.rage_mode:
+            travel_frames *= 0.72  # 28% faster during rage
+        speed = 1.0 / travel_frames
+        speed *= 1.0 + variance * 0.25
+        return max(speed, 1.0 / 55.0)
+
+    def _pick_ball_type(self, diff: float) -> str:
+        r = random.random()
+        bomb_chance = min(0.18, 0.06 + diff * 0.02)
+        gold_chance = 0.12
+        health_chance = 0.10 if self.lives_left < self.lives_max else 0.0
+        if r < bomb_chance:
+            return "bomb"
+        if r < bomb_chance + gold_chance:
+            return "gold"
+        if r < bomb_chance + gold_chance + health_chance:
+            return "health"
+        return "normal"
+
+    def _make_ball(self, lane: int, diff: float, ball_type: str = None) -> "Ball":
+        if ball_type is None:
+            ball_type = self._pick_ball_type(diff)
+        variance = random.uniform(-1.0, 1.0)
         ball = Ball(
-            self.width,
-            self.height,
-            difficulty=self.difficulty(),
+            lane=lane,
+            z_speed=self._z_speed(diff, variance),
             spawn_time=time.perf_counter(),
-            min_visible_seconds=self.min_ball_visible_seconds,
-            min_travel_fraction=self.min_ball_travel_fraction,
-            is_health_ball=is_health,
+            ball_type=ball_type,
         )
-        self.spawn_pending.append({"frames": TELEGRAPH_FRAMES, "ball": ball})
+        sx, sy = self.lane_system.screen_pos(lane, 0.0)
+        ball.x, ball.y = sx, sy
+        ball.radius = self.lane_system.ball_radius(0.0)
+        return ball
+
+    def spawn_ball(self, force_lane: int = None, force_type: str = None):
+        diff = self.difficulty()
+        lane = force_lane if force_lane is not None else random.randint(0, LaneSystem.LANE_COUNT - 1)
+        ball = self._make_ball(lane, diff, force_type)
+        self.balls.append(ball)
+
+        # Multi-spawn: chaos — second ball in different lane, 25% at diff<3, 50% at diff>=3
+        multi_chance = 0.50 if diff >= 3.0 else 0.25
+        if random.random() < multi_chance and self.burst_cooldown <= 0:
+            other_lanes = [l for l in range(LaneSystem.LANE_COUNT) if l != lane]
+            lane2 = random.choice(other_lanes)
+            ball2 = self._make_ball(lane2, diff)
+            self.balls.append(ball2)
+            self.burst_cooldown = 8  # prevent infinite cascade
 
     def _emit_audio(self, name):
         self.pending_audio_events.append(str(name))
@@ -548,6 +595,10 @@ class GameEngine:
             self.juice_rim_frames -= 1
         if self.quiet_frames > 0:
             self.quiet_frames -= 1
+        if self.rage_flash_frames > 0:
+            self.rage_flash_frames -= 1
+        if self.burst_cooldown > 0:
+            self.burst_cooldown -= 1
         if self.hit_stop_frames > 0:
             self.hit_stop_frames -= 1
             return
@@ -565,68 +616,42 @@ class GameEngine:
             self.best_score = self.score
             _save_best_score(self.best_score)
 
+        # Rage mode: activated at combo >= 8, disabled on combo break
+        was_rage = self.rage_mode
+        self.rage_mode = self.combo >= 8
+        if self.rage_mode and not was_rage:
+            self.rage_flash_frames = 30
+            self._emit_audio("combo_up")
+
+        # Combo decay: if no hit for 2.5s (150f), combo drops 1 per 90f
+        self.combo_decay_timer += 1
+        if self.combo_decay_timer > 150 and self.combo > 0:
+            if self.combo_decay_timer % 90 == 0:
+                self.combo = max(0, self.combo - 1)
+                self.multiplier = 1 + (self.combo // 5)
+
         self.spawn_timer += 1
         diff = self.difficulty()
-        spawn_interval = int(max(24, self.base_spawn_interval / diff))
+        spawn_interval = int(max(10, 44 - diff * 6))
 
         if self.spawn_timer > spawn_interval:
             self.spawn_ball()
             self.spawn_timer = 0
 
-        now = time.perf_counter()
         for ball in self.balls:
             if getattr(ball, "_near_miss_cd", 0) > 0:
                 ball._near_miss_cd -= 1
             ball.update()
-            self._apply_fairness_bounce(ball, now)
+            # Update screen-space position from z
+            sx, sy = self.lane_system.screen_pos(ball.lane, ball.z)
+            ball.x, ball.y = sx, sy
+            ball.radius = self.lane_system.ball_radius(ball.z)
 
         self.check_collisions(hands)
         self._check_near_misses(hands)
 
         self.remove_offscreen_balls()
         self._tick_missions()
-
-    def _ball_is_fair(self, ball, now):
-        """True when age + travel rules allow the ball to leave / count as a miss."""
-        min_travel_pixels = self.min_ball_travel_fraction * float(
-            max(self.width, self.height)
-        )
-        age_ok = ball.age_seconds(now) >= self.min_ball_visible_seconds
-        travel_ok = (
-            math.hypot(ball.x - ball.start_x, ball.y - ball.start_y)
-            >= min_travel_pixels
-        )
-        return age_ok and travel_ok
-
-    def _apply_fairness_bounce(self, ball, now):
-        """
-        While the ball is still in its 'unfair' window, keep it inside the
-        extended play rect (same bounds used for off-screen checks) by
-        clamping position and reflecting velocity — so it doesn't sit
-        invisibly off-screen until the timer expires.
-        """
-        if self._ball_is_fair(ball, now):
-            return
-
-        r = float(ball.radius)
-        min_x, max_x = -r, self.width + r
-        min_y, max_y = -r, self.height + r
-        eps = 2.0
-        damp = 0.92
-
-        if ball.x < min_x:
-            ball.x = min_x + eps
-            ball.vx = abs(ball.vx) * damp
-        elif ball.x > max_x:
-            ball.x = max_x - eps
-            ball.vx = -abs(ball.vx) * damp
-
-        if ball.y < min_y:
-            ball.y = min_y + eps
-            ball.vy = abs(ball.vy) * damp
-        elif ball.y > max_y:
-            ball.y = max_y - eps
-            ball.vy = -abs(ball.vy) * damp
 
     def _spawn_near_miss(self, hx, hy, bx, by):
         ang = math.atan2(by - hy, bx - hx)
@@ -678,6 +703,11 @@ class GameEngine:
 
             hit = False
 
+            # Only hittable once ball is visible and large enough (z >= 0.45)
+            if ball.z < 0.45:
+                remaining_balls.append(ball)
+                continue
+
             for hand in hands:
 
                 dx = ball.x - hand["x"]
@@ -686,7 +716,39 @@ class GameEngine:
                 dist = math.sqrt(dx*dx + dy*dy)
 
                 if dist < ball.radius + hand["radius"]:
-                    if ball.is_health_ball:
+                    btype = getattr(ball, "ball_type", "normal")
+                    if btype == "bomb":
+                        # Hitting a bomb = big punishment
+                        self.lives_left -= 2
+                        self.combo = 0
+                        self.multiplier = 1
+                        self.rage_mode = False
+                        self.run_misses += 1
+                        self._spawn_pop_burst(ball.x, ball.y, 1)
+                        self.floating_texts.append({
+                            "kind": "event",
+                            "text": "BOMB! -2",
+                            "x": float(ball.x),
+                            "y": float(ball.y) - 10,
+                            "vx": 0.0,
+                            "vy": -1.2,
+                            "life": 50,
+                            "max_life": 50,
+                            "color": (30, 30, 220),
+                            "scale": 0.85,
+                        })
+                        self.shake_keyed = True
+                        self.shake_frames = max(self.shake_frames, len(SHAKE_OFFSETS))
+                        self.shake_strength = 1.0
+                        self.life_loss_overlay_frames = max(self.life_loss_overlay_frames, DT.DUR_LIFE_LOSS_FLASH)
+                        self.life_loss_anim_frames = max(self.life_loss_anim_frames, DT.DUR_HEART_LOSS_ANIM)
+                        self._emit_audio("miss")
+                        if self.lives_left <= 0:
+                            self.game_over = True
+                            self.session_summary = self._build_session_summary()
+                            _save_best_score(self.best_score)
+                            self._emit_audio("game_over")
+                    elif btype == "health":
                         self.lives_left = min(self.lives_max, self.lives_left + 1)
                         self.run_health_pops += 1
                         self.juice_rim_frames = max(self.juice_rim_frames, 14)
@@ -696,14 +758,7 @@ class GameEngine:
                         self.shake_strength = max(self.shake_strength, 1.4)
                         self._emit_audio("health")
                         self._spawn_pop_burst(ball.x, ball.y, self.combo)
-                        self.spawn_confetti(
-                            ball.x,
-                            ball.y,
-                            self.multiplier,
-                            ball.color,
-                            burst_mult=0.18,
-                            preset="health",
-                        )
+                        self.spawn_confetti(ball.x, ball.y, self.multiplier, ball.color, burst_mult=0.18, preset="health")
                         self.floating_texts.append({
                             "kind": "event",
                             "text": "LIFE!",
@@ -717,20 +772,22 @@ class GameEngine:
                             "scale": 0.72,
                         })
                     else:
+                        # normal or gold
                         old_best = self.best_score
                         old_mult = self.multiplier
                         self.combo += 1
+                        self.combo_decay_timer = 0  # reset decay on hit
                         self.run_pops += 1
                         self.run_best_combo = max(self.run_best_combo, self.combo)
                         self.multiplier = 1 + (self.combo // 5)
-                        pts = self.multiplier
+                        rage_mult = 2 if self.rage_mode else 1
+                        base_pts = 3 if btype == "gold" else 1
+                        pts = self.multiplier * base_pts * rage_mult
                         self.score += pts
                         self.combo_last_pop_frame = self.frame_count
                         self.combo_pulse_frames = DT.COMBO_PULSE_FRAMES
                         self._spawn_pop_burst(ball.x, ball.y, self.combo)
-                        pop_col = (
-                            DT.C_WHITE if self.combo < 3 else DT.C_AMBER
-                        )
+                        pop_col = DT.C_AMBER if (btype == "gold" or self.combo >= 3) else DT.C_WHITE
                         self.floating_texts.append(
                             {
                                 "kind": "score_popup",
@@ -803,71 +860,55 @@ class GameEngine:
 
 
     def remove_offscreen_balls(self):
-
         remaining = []
         removed_any = False
 
-        now = time.perf_counter()
-
         for ball in self.balls:
-
-            is_offscreen = (
-                ball.y > self.height + ball.radius or
-                ball.y < -ball.radius or
-                ball.x < -ball.radius or
-                ball.x > self.width + ball.radius
-            )
-
-            if not is_offscreen:
+            if ball.z < 1.05:
                 remaining.append(ball)
                 continue
 
-            # Health balls are optional bonus; missing them doesn't cost a life.
-            if ball.is_health_ball:
+            btype = getattr(ball, "ball_type", "normal")
+            # Health and bomb balls don't cost a life when they pass
+            if btype in ("health", "bomb"):
                 continue
 
-            # Fairness: don't immediately penalize for balls that are just spawned.
-            if self._ball_is_fair(ball, now):
-                self.lives_left -= 1
-                self.run_misses += 1
-                self.floating_texts.append({
-                    "kind": "event",
-                    "text": "-1",
-                    "x": float(self.width) / 2,
-                    "y": float(self.height) * 0.36,
-                    "vx": 0.0,
-                    "vy": -0.6,
-                    "life": 45,
-                    "max_life": 45,
-                    # Light coral (BGR): reads on dark hair; outline from renderer adds contrast.
-                    "color": (210, 230, 255),
-                    "scale": 1.0,
-                })
-                if self.lives_left <= 0:
-                    self.game_over = True
-                    self.session_summary = self._build_session_summary()
-                    _save_best_score(self.best_score)
-                    self._emit_audio("game_over")
-                else:
-                    self._emit_audio("miss")
-                self.shake_keyed = True
-                self.shake_frames = len(SHAKE_OFFSETS)
-                self.shake_strength = 1.0
-                self.life_loss_overlay_frames = max(
-                    self.life_loss_overlay_frames, DT.DUR_LIFE_LOSS_FLASH
-                )
-                self.life_loss_anim_frames = max(
-                    self.life_loss_anim_frames, DT.DUR_HEART_LOSS_ANIM
-                )
-                removed_any = True
+            self.lives_left -= 1
+            self.run_misses += 1
+            self.floating_texts.append({
+                "kind": "event",
+                "text": "-1",
+                "x": float(self.width) / 2,
+                "y": float(self.height) * 0.36,
+                "vx": 0.0,
+                "vy": -0.6,
+                "life": 45,
+                "max_life": 45,
+                "color": (210, 230, 255),
+                "scale": 1.0,
+            })
+            if self.lives_left <= 0:
+                self.game_over = True
+                self.session_summary = self._build_session_summary()
+                _save_best_score(self.best_score)
+                self._emit_audio("game_over")
             else:
-                # Keep the ball around until it has had time to "exist"
-                # and travel far enough to be fair to the player.
-                remaining.append(ball)
+                self._emit_audio("miss")
+            self.shake_keyed = True
+            self.shake_frames = len(SHAKE_OFFSETS)
+            self.shake_strength = 1.0
+            self.life_loss_overlay_frames = max(
+                self.life_loss_overlay_frames, DT.DUR_LIFE_LOSS_FLASH
+            )
+            self.life_loss_anim_frames = max(
+                self.life_loss_anim_frames, DT.DUR_HEART_LOSS_ANIM
+            )
+            removed_any = True
 
         self.balls = remaining
 
-        # Missing a ball breaks the combo.
         if removed_any:
             self.combo = 0
             self.multiplier = 1
+            self.rage_mode = False
+            self.combo_decay_timer = 0

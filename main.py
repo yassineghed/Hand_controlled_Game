@@ -171,7 +171,8 @@ def main():
                     {
                         "mode": "pregame",
                         "balls": game.balls,
-                        "spawn_pending": game.spawn_pending,
+                        "spawn_pending": [],
+                        "lane_info": game.lane_system.info_dict(),
                         "hand_positions": [
                             (h["x"], h["y"], h["confidence"], h["radius"])
                             for h in hands
@@ -217,7 +218,8 @@ def main():
                     {
                         "mode": "play",
                         "balls": game.balls,
-                        "spawn_pending": game.spawn_pending,
+                        "spawn_pending": [],
+                        "lane_info": game.lane_system.info_dict(),
                         "hand_positions": [
                             (h["x"], h["y"], h["confidence"], h["radius"])
                             for h in hands
@@ -250,6 +252,8 @@ def main():
                         "coins": game.coins,
                         "hint_alpha": game.hint_bar_opacity,
                         "ui_tick": ui_tick,
+                        "rage_mode": game.rage_mode,
+                        "rage_flash_frames": game.rage_flash_frames,
                     },
                 )
                 # Step 1 extraction: shake rendering will be implemented inside renderer.
