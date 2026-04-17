@@ -254,9 +254,29 @@ def main():
                         "ui_tick": ui_tick,
                         "rage_mode": game.rage_mode,
                         "rage_flash_frames": game.rage_flash_frames,
+                        "slowmo_frames": game.slowmo_frames,
+                        "clap_cooldown": game.clap_cooldown,
+                        "clap_cooldown_max": 240,
+                        "highhand_ready": (game.combo >= 5 and game.slowmo_frames <= 0),
+                        "game_over": game.game_over,
+                        "session_summary": game.session_summary,
+                        "phase_name": game.phase_name,
+                        "milestone_flash_frames": game.milestone_flash_frames,
+                        "milestone_text": game.milestone_text,
+                        "near_best_frames": game.near_best_frames,
+                        "last_life_pulse": game.last_life_pulse,
                     },
                 )
-                # Step 1 extraction: shake rendering will be implemented inside renderer.
+                # Clap-to-restart on game over
+                if game.game_over:
+                    h1 = hands[0] if len(hands) > 0 else None
+                    h2 = hands[1] if len(hands) > 1 else None
+                    if h1 and h2:
+                        clap_dist = ((h1["x"]-h2["x"])**2 + (h1["y"]-h2["y"])**2)**0.5
+                        if clap_dist < 130:
+                            game.reset()
+                            game_active = False
+                            steady_hands_frames = 0
                 if game.shake_frames > 0:
                     game.shake_frames -= 1
 

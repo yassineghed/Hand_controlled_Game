@@ -193,21 +193,19 @@ def draw_lane_rails(frame, lane_info: dict):
     blend(frame, C_WHITE, 0.06, 0, vp_y - 1, w, vp_y + 1)
 
 
-def draw_score_panel(frame, score, best_score):
-    x, y, w, h = HUD_MARGIN, HUD_MARGIN, 100, 60
+def draw_score_panel(frame, score, best_score, phase_name=""):
+    x, y, w, h = HUD_MARGIN, HUD_MARGIN, 115, 68
     draw_glass_panel(frame, x, y, w, h)
-    draw_text(frame, "SCORE", x + PANEL_PAD_X, y + 16, alpha=TEXT_TERTIARY, scale=0.28)
+    label = phase_name if phase_name else "SCORE"
+    draw_text(frame, label, x + PANEL_PAD_X, y + 16, alpha=TEXT_TERTIARY, scale=0.28)
     draw_text(
-        frame,
-        f"{score:,}",
-        x + PANEL_PAD_X,
-        y + 40,
-        alpha=TEXT_PRIMARY,
-        scale=0.75,
-        font=cv2.FONT_HERSHEY_SIMPLEX,
-        thickness=1,
+        frame, f"{score:,}", x + PANEL_PAD_X, y + 42,
+        alpha=TEXT_PRIMARY, scale=0.78,
+        font=cv2.FONT_HERSHEY_SIMPLEX, thickness=1,
     )
-    draw_text(frame, f"Best {best_score:,}", x + PANEL_PAD_X, y + 55, alpha=TEXT_GHOST * 0.8, scale=0.26)
+    best_col = C_AMBER if score > best_score else C_WHITE
+    draw_text(frame, f"BEST {best_score:,}", x + PANEL_PAD_X, y + 60,
+              alpha=TEXT_GHOST * 0.9, scale=0.26, color=best_col)
 
 
 def draw_lives(frame, lives, max_lives, fw):
@@ -529,6 +527,140 @@ def get_shake(shake_frames):
     return SHAKE_KF[min(DUR_SHAKE - shake_frames, len(SHAKE_KF) - 1)]
 
 
+def draw_near_best_banner(frame, near_best_frames: int, fw: int, fh: int):
+    if near_best_frames <= 0:
+        return
+    pulse = 0.5 + 0.5 * math.sin(near_best_frames * 0.35)
+    a = 0.55 + 0.30 * pulse
+    text = "BEAT YOUR BEST!"
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+    x = (fw - tw) // 2
+    y = fh // 2 - 60
+    # Glow shadow
+    draw_text(frame, text, x + 2, y + 2, alpha=0.25, scale=0.48,
+              font=cv2.FONT_HERSHEY_SIMPLEX, thickness=2, color=(0, 0, 0))
+    draw_text(frame, text, x, y, alpha=a, scale=0.48,
+              font=cv2.FONT_HERSHEY_SIMPLEX, thickness=1, color=C_AMBER)
+
+
+def draw_milestone_flash(frame, flash_frames: int, text: str, fw: int, fh: int):
+    if flash_frames <= 0 or not text:
+        return
+    t = flash_frames / 90.0
+    # Full-screen white flash that fades
+    if flash_frames > 72:
+        blend(frame, C_WHITE, 0.18 * ((flash_frames - 72) / 18.0), 0, 0, fw, fh)
+    # Large centered text
+    a = min(1.0, t * 2.5)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)
+    x = (fw - tw) // 2
+    y = fh // 2 + th // 2
+    draw_text(frame, text, x + 2, y + 2, alpha=a * 0.30, scale=1.1,
+              font=cv2.FONT_HERSHEY_SIMPLEX, thickness=3, color=(0, 0, 0))
+    draw_text(frame, text, x, y, alpha=a, scale=1.1,
+              font=cv2.FONT_HERSHEY_SIMPLEX, thickness=2, color=C_AMBER)
+
+
+def draw_last_life_vignette(frame, pulse: int, fw: int, fh: int):
+    if pulse == 0:
+        return
+    intensity = 0.5 + 0.5 * math.sin(pulse * math.pi / 30.0)
+    a = 0.12 + 0.14 * intensity
+    # Rose vignette around edges
+    for margin, alpha_mult in [(0, 1.0), (40, 0.55), (80, 0.20)]:
+        blend(frame, C_ROSE, a * alpha_mult, 0, 0, fw, margin + 8)
+        blend(frame, C_ROSE, a * alpha_mult, 0, fh - margin - 8, fw, fh)
+        blend(frame, C_ROSE, a * alpha_mult, 0, 0, margin + 8, fh)
+        blend(frame, C_ROSE, a * alpha_mult, fw - margin - 8, 0, fw, fh)
+
+
+def draw_game_over_overlay(frame, summary: dict, best_score: int):
+    h, w = frame.shape[:2]
+    # Dark vignette
+    overlay = np.zeros_like(frame)
+    cv2.addWeighted(overlay, 0.62, frame, 0.38, 0, frame)
+
+    pw, ph = min(480, w - 40), min(320, h - 40)
+    x = (w - pw) // 2
+    y = (h - ph) // 2
+    draw_glass_panel(frame, x, y, pw, ph)
+
+    cy = y + 36
+    draw_text(frame, "GAME OVER", x + pw // 2 - 90, cy, alpha=1.0, scale=0.80,
+              font=cv2.FONT_HERSHEY_SIMPLEX, thickness=2, color=C_ROSE)
+    cy += 40
+
+    score = summary.get("score", 0) if summary else 0
+    pops  = summary.get("pops", 0) if summary else 0
+    misses = summary.get("misses", 0) if summary else 0
+    acc   = summary.get("accuracy", 0.0) if summary else 0.0
+    bcombo = summary.get("best_combo", 0) if summary else 0
+    coins  = summary.get("coins_earned", 0) if summary else 0
+
+    rows = [
+        (f"Score: {score}", f"Best: {best_score}"),
+        (f"Pops: {pops}", f"Misses: {misses}"),
+        (f"Accuracy: {acc:.0f}%", f"Best Combo: x{bcombo}"),
+        (f"Coins earned: +{coins}", ""),
+    ]
+    for left, right in rows:
+        draw_text(frame, left,  x + 28,      cy, alpha=0.85, scale=0.38)
+        if right:
+            draw_text(frame, right, x + pw // 2 + 8, cy, alpha=0.55, scale=0.34)
+        cy += 26
+
+    cy += 8
+    draw_text(frame, "[R] Restart  or  CLAP hands", x + 28, cy, alpha=0.38, scale=0.30)
+
+
+def draw_power_ui(frame, clap_cd: int, clap_cd_max: int, highhand_ready: bool,
+                  slowmo_frames: int, fw: int, fh: int):
+    """Bottom-center: clap cooldown arc + hands-high indicator."""
+    cx, cy = fw // 2, fh - 36
+    r = 18
+
+    # Clap arc (recharge circle)
+    if clap_cd > 0:
+        t = 1.0 - clap_cd / float(max(1, clap_cd_max))
+        angle = int(360 * t)
+        overlay = frame.copy()
+        cv2.ellipse(overlay, (cx, cy), (r, r), -90, 0, angle, C_AMBER, 2, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.70, frame, 0.30, 0, frame)
+        draw_text(frame, "CLAP", cx - 16, cy + 5, alpha=0.30, scale=0.26)
+    else:
+        blend_circle(frame, (cx, cy), r, C_AMBER, alpha=0.18, filled=True)
+        draw_text(frame, "CLAP", cx - 16, cy + 5, alpha=0.70, scale=0.28, color=C_AMBER)
+
+    # Slowmo active bar
+    if slowmo_frames > 0:
+        bw = int(fw * 0.35)
+        bx = (fw - bw) // 2
+        blend(frame, (200, 160, 60), 0.20, bx, fh - 8, bx + bw, fh - 4)
+        fill_w = int(bw * slowmo_frames / 120.0)
+        blend(frame, (255, 200, 80), 0.65, bx, fh - 8, bx + fill_w, fh - 4)
+
+    # Hands-high indicator (left of clap circle)
+    col = C_MINT if highhand_ready else C_WHITE
+    a = 0.55 if highhand_ready else 0.15
+    blend_circle(frame, (cx - r * 2 - 8, cy), r - 6, col, alpha=a, filled=True)
+    draw_text(frame, "^", cx - r * 2 - 14, cy + 5, alpha=a * 1.3, scale=0.30, color=col)
+
+
+def draw_rage_badge(frame, fw: int, ui_tick: int):
+    pulse = 0.5 + 0.5 * math.sin(ui_tick * 0.30)
+    a_bg = 0.18 + 0.10 * pulse
+    text = "RAGE"
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, 0.38, 1)
+    w_badge = tw + 22
+    h_badge = th + 10
+    bx = (fw - w_badge) // 2
+    by = 70
+    draw_rounded_rect(frame, bx, by, w_badge, h_badge, h_badge // 2, (30, 30, 220), a_bg, filled=True)
+    draw_rounded_rect(frame, bx, by, w_badge, h_badge, h_badge // 2, (30, 30, 220), a_bg * 2, filled=False)
+    draw_text(frame, text, bx + 11, by + th + 4, alpha=0.90 + 0.10 * pulse, scale=0.38,
+              font=cv2.FONT_HERSHEY_DUPLEX, thickness=1, color=(80, 80, 255))
+
+
 def draw_flashes(frame, shake_frames, combo_flash_frames):
     if shake_frames > 0:
         blend(frame, C_ROSE, 0.18 * (shake_frames / DUR_SHAKE), 0, 0, frame.shape[1], frame.shape[0])
@@ -654,12 +786,18 @@ class Renderer:
         draw_particles(frame, state.get("particles", []))
         draw_flashes(frame, state.get("shake_frames", 0), state.get("combo_flash_frames", 0))
 
-        # L6.5 — rage mode overlay (pulsing red-orange tint)
+        # L6.5 — slow-mo blue tint
+        slowmo = int(state.get("slowmo_frames", 0))
+        if slowmo > 0:
+            pulse = 0.5 + 0.5 * math.sin(int(state.get("ui_tick", 0)) * 0.18)
+            blend(frame, (180, 120, 40), 0.10 + 0.06 * pulse, 0, 0, w, h)
+
+        # L6.6 — rage mode overlay + badge
+        ui_tick = int(state.get("ui_tick", 0))
         if state.get("rage_mode", False):
-            ui_tick = int(state.get("ui_tick", 0))
             pulse = 0.5 + 0.5 * math.sin(ui_tick * 0.25)
-            rage_a = 0.06 + 0.08 * pulse
-            blend(frame, (30, 30, 220), rage_a, 0, 0, w, h)
+            blend(frame, (30, 30, 220), 0.06 + 0.08 * pulse, 0, 0, w, h)
+            draw_rage_badge(frame, w, ui_tick)
         rage_flash = int(state.get("rage_flash_frames", 0))
         if rage_flash > 0:
             blend(frame, (30, 80, 255), 0.25 * (rage_flash / 30.0), 0, 0, w, h)
@@ -667,8 +805,15 @@ class Renderer:
         # L7 — score popups
         draw_score_popups(frame, state.get("popups", []))
 
+        # L7.5 — near-best banner + milestone flash + last-life vignette
+        draw_near_best_banner(frame, int(state.get("near_best_frames", 0)), w, h)
+        draw_milestone_flash(frame, int(state.get("milestone_flash_frames", 0)),
+                             str(state.get("milestone_text", "")), w, h)
+        draw_last_life_vignette(frame, int(state.get("last_life_pulse", 0)), w, h)
+
         # L8 — HUD panels
-        draw_score_panel(frame, state.get("score", 0), state.get("best_score", 0))
+        draw_score_panel(frame, state.get("score", 0), state.get("best_score", 0),
+                         str(state.get("phase_name", "")))
         draw_lives(frame, state.get("lives", 0), state.get("max_lives", 0), w)
         draw_combo_badge_animated(
             frame,
@@ -680,6 +825,16 @@ class Renderer:
         )
         draw_goals_panel(frame, state.get("goals", []), state.get("run_number", 1), state.get("level", 1), state.get("coins", 0), w)
 
+        # L8.5 — power UI (clap cooldown arc + slow-mo bar + hands-high dot)
+        draw_power_ui(
+            frame,
+            int(state.get("clap_cooldown", 0)),
+            int(state.get("clap_cooldown_max", 240)),
+            bool(state.get("highhand_ready", False)),
+            slowmo,
+            w, h,
+        )
+
         # L9 — hint bar (fades after run 2)
         run_number = int(state.get("run_number", 1))
         hint_alpha = state.get("hint_alpha", None)
@@ -689,22 +844,19 @@ class Renderer:
             if run_number > 2:
                 self.hint_alpha = max(0.0, self.hint_alpha - 1 / 60)
         draw_hint_bar(
-            frame,
-            w,
-            h,
+            frame, w, h,
             [("[M]", "reroll"), ("[N]", "next"), ("[R]", "restart"), ("[Esc]", "quit")],
             alpha=self.hint_alpha,
         )
-        # Apply global shake to the entire rendered scene (HUD included).
+
+        # L10 — game over overlay (on top of everything)
+        if state.get("game_over", False):
+            draw_game_over_overlay(frame, state.get("session_summary"), state.get("best_score", 0))
+
+        # Apply global shake
         if shake_frames > 0 and (dx != 0 or dy != 0):
             m = np.float32([[1, 0, dx], [0, 1, dy]])
-            frame = cv2.warpAffine(
-                frame,
-                m,
-                (w, h),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_REFLECT,
-            )
+            frame = cv2.warpAffine(frame, m, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
         return frame
 
 

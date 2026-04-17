@@ -115,6 +115,18 @@ class GameEngine:
         self.rage_flash_frames = 0
         self.combo_decay_timer = 0
         self.burst_cooldown = 0
+        # Gesture powers
+        self.clap_cooldown = 0
+        self.slowmo_frames = 0
+        self.clap_was_active = False
+        self.highhand_was_active = False
+        # Difficulty feel
+        self.phase_name = "ROOKIE"
+        self.last_milestone = 0
+        self.near_best_frames = 0
+        self.milestone_flash_frames = 0
+        self.milestone_text = ""
+        self.last_life_pulse = 0
 
         self.confetti_particles = []
         self.confetti_gravity = 0.35
@@ -173,6 +185,16 @@ class GameEngine:
         self.rage_flash_frames = 0
         self.combo_decay_timer = 0
         self.burst_cooldown = 0
+        self.clap_cooldown = 0
+        self.slowmo_frames = 0
+        self.clap_was_active = False
+        self.highhand_was_active = False
+        self.phase_name = "ROOKIE"
+        self.last_milestone = 0
+        self.near_best_frames = 0
+        self.milestone_flash_frames = 0
+        self.milestone_text = ""
+        self.last_life_pulse = 0
         self.confetti_particles = []
         self.pop_particles = []
         self.spawn_pending = []
@@ -212,14 +234,56 @@ class GameEngine:
 
 
     def difficulty(self):
-        tier_bonus = {
-            "Rookie": 0.00,
-            "Skilled": 0.15,
-            "Expert": 0.28,
-            "Master": 0.42,
-        }.get(self.stage_name, 0.0)
         elapsed = time.perf_counter() - self.game_start_time
-        return min(5.5, 1.0 + max(self.score / 25.0, elapsed / 20.0) + tier_bonus)
+        # Score drives difficulty; time provides a floor so campers get punished
+        score_d = self.score / 15.0       # score 15 → +1, score 150 → +10
+        time_d  = elapsed / 18.0          # 18s → +1, 90s → +5
+        raw = 1.0 + max(score_d, time_d)
+        # Soft ceiling: above 9 each extra point is worth 30% (still grows, just slower)
+        if raw > 9.0:
+            raw = 9.0 + (raw - 9.0) * 0.30
+        tier_bonus = {"Rookie": 0.0, "Skilled": 0.2, "Expert": 0.4, "Master": 0.6}.get(self.stage_name, 0.0)
+        return raw + tier_bonus
+
+    _PHASE_THRESHOLDS = [
+        (0,   "ROOKIE"),
+        (12,  "RISING"),
+        (30,  "HEATED"),
+        (70,  "FIERCE"),
+        (140, "INSANE"),
+        (280, "GODLIKE"),
+    ]
+    _MILESTONES = [10, 25, 50, 100, 150, 200, 300, 500, 750, 1000]
+
+    def _update_phase(self):
+        name = "ROOKIE"
+        for threshold, label in self._PHASE_THRESHOLDS:
+            if self.score >= threshold:
+                name = label
+        self.phase_name = name
+
+    def _check_milestones(self):
+        for m in self._MILESTONES:
+            if self.last_milestone < m <= self.score:
+                self.last_milestone = m
+                self.milestone_flash_frames = 90
+                self.milestone_text = f"{m}!"
+                self.juice_rim_frames = max(self.juice_rim_frames, 35)
+                self.shake_frames = max(self.shake_frames, 12)
+                self.shake_strength = 3.5
+                self.combo_flash_frames = max(self.combo_flash_frames, DT.DUR_COMBO_FLASH)
+                self._emit_audio("combo_up")
+                self.spawn_confetti(
+                    float(self.width) * 0.5, float(self.height) * 0.35,
+                    self.multiplier + 3, DT.C_AMBER, burst_mult=2.2, preset="combo",
+                )
+                self.floating_texts.append({
+                    "kind": "event", "text": f"SCORE {m}!",
+                    "x": float(self.width) * 0.5, "y": float(self.height) * 0.28,
+                    "vx": 0.0, "vy": -0.7, "life": 75, "max_life": 75,
+                    "color": DT.C_AMBER, "scale": 1.2,
+                })
+                break
 
     def _xp_needed(self, level=None):
         lv = self.level if level is None else int(level)
@@ -379,6 +443,7 @@ class GameEngine:
         total_events = self.run_pops + self.run_misses
         accuracy = 100.0 * self.run_pops / total_events if total_events > 0 else 100.0
         return {
+            "score": int(self.score),
             "pops": int(self.run_pops),
             "misses": int(self.run_misses),
             "accuracy": float(accuracy),
@@ -391,15 +456,64 @@ class GameEngine:
         }
 
 
+    def _check_gestures(self, hands):
+        if len(hands) < 2:
+            self.clap_was_active = False
+            self.highhand_was_active = False
+            return
+        h1, h2 = hands[0], hands[1]
+        dist = math.hypot(h1["x"] - h2["x"], h1["y"] - h2["y"])
+
+        # Clap: both hands within 130px → clear all non-bomb balls
+        clap_now = dist < 130
+        if clap_now and not self.clap_was_active and self.clap_cooldown <= 0:
+            self._activate_clap_clear()
+        self.clap_was_active = clap_now
+
+        # Hands-high: both hands in top 32% of screen + combo>=5 → slow-mo
+        high_thresh = self.height * 0.32
+        highhand_now = h1["y"] < high_thresh and h2["y"] < high_thresh
+        if highhand_now and not self.highhand_was_active and self.combo >= 5 and self.slowmo_frames <= 0:
+            self._activate_slowmo()
+        self.highhand_was_active = highhand_now
+
+    def _activate_clap_clear(self):
+        cleared = [b for b in self.balls if getattr(b, "ball_type", "normal") != "bomb"]
+        for b in cleared:
+            self._spawn_pop_burst(b.x, b.y, self.combo)
+            self.spawn_confetti(b.x, b.y, self.multiplier, b.color, burst_mult=0.5, preset="combo")
+        self.balls = [b for b in self.balls if getattr(b, "ball_type", "normal") == "bomb"]
+        self.clap_cooldown = 240
+        self.shake_frames = max(self.shake_frames, 10)
+        self.shake_strength = 2.5
+        self.combo_flash_frames = max(self.combo_flash_frames, DT.DUR_COMBO_FLASH)
+        self.floating_texts.append({
+            "kind": "event", "text": "CLEAR!",
+            "x": float(self.width) * 0.5, "y": float(self.height) * 0.38,
+            "vx": 0.0, "vy": -0.9, "life": 55, "max_life": 55,
+            "color": (200, 255, 255), "scale": 1.1,
+        })
+        self._emit_audio("combo_up")
+
+    def _activate_slowmo(self):
+        self.slowmo_frames = 120
+        self.floating_texts.append({
+            "kind": "event", "text": "SLOW MO!",
+            "x": float(self.width) * 0.5, "y": float(self.height) * 0.38,
+            "vx": 0.0, "vy": -0.7, "life": 50, "max_life": 50,
+            "color": (255, 200, 80), "scale": 0.95,
+        })
+        self._emit_audio("mission")
+
     def _z_speed(self, diff: float, variance: float = 0.0) -> float:
-        """variance in [-1, 1] adds ±25% speed randomness."""
-        t = min((diff - 1.0) / 4.5, 1.0)
-        travel_frames = 55.0 - 27.0 * t  # 55f at diff=1, 28f at diff=5.5
+        """variance in [-1, 1] adds ±22% speed randomness."""
+        t = min((diff - 1.0) / 10.0, 1.0)
+        travel_frames = 54.0 - 40.0 * t  # 54f at diff=1 → 14f at diff=11+
         if self.rage_mode:
-            travel_frames *= 0.72  # 28% faster during rage
+            travel_frames *= 0.72
         speed = 1.0 / travel_frames
-        speed *= 1.0 + variance * 0.25
-        return max(speed, 1.0 / 55.0)
+        speed *= 1.0 + variance * 0.22
+        return max(speed, 1.0 / 14.0)
 
     def _pick_ball_type(self, diff: float) -> str:
         r = random.random()
@@ -431,18 +545,25 @@ class GameEngine:
 
     def spawn_ball(self, force_lane: int = None, force_type: str = None):
         diff = self.difficulty()
+
+        # Full-lane wave at high difficulty
+        if diff >= 4.0 and random.random() < 0.14 and self.burst_cooldown <= 0:
+            for l in range(LaneSystem.LANE_COUNT):
+                self.balls.append(self._make_ball(l, diff))
+            self.burst_cooldown = 18
+            return
+
         lane = force_lane if force_lane is not None else random.randint(0, LaneSystem.LANE_COUNT - 1)
         ball = self._make_ball(lane, diff, force_type)
         self.balls.append(ball)
 
-        # Multi-spawn: chaos — second ball in different lane, 25% at diff<3, 50% at diff>=3
-        multi_chance = 0.50 if diff >= 3.0 else 0.25
+        # Multi-spawn: second ball in different lane
+        multi_chance = 0.55 if diff >= 3.0 else 0.28
         if random.random() < multi_chance and self.burst_cooldown <= 0:
             other_lanes = [l for l in range(LaneSystem.LANE_COUNT) if l != lane]
             lane2 = random.choice(other_lanes)
-            ball2 = self._make_ball(lane2, diff)
-            self.balls.append(ball2)
-            self.burst_cooldown = 8  # prevent infinite cascade
+            self.balls.append(self._make_ball(lane2, diff))
+            self.burst_cooldown = 8
 
     def _emit_audio(self, name):
         self.pending_audio_events.append(str(name))
@@ -599,6 +720,10 @@ class GameEngine:
             self.rage_flash_frames -= 1
         if self.burst_cooldown > 0:
             self.burst_cooldown -= 1
+        if self.clap_cooldown > 0:
+            self.clap_cooldown -= 1
+        if self.slowmo_frames > 0:
+            self.slowmo_frames -= 1
         if self.hit_stop_frames > 0:
             self.hit_stop_frames -= 1
             return
@@ -616,6 +741,23 @@ class GameEngine:
             self.best_score = self.score
             _save_best_score(self.best_score)
 
+        self._update_phase()
+        self._check_milestones()
+        if self.milestone_flash_frames > 0:
+            self.milestone_flash_frames -= 1
+
+        # Near-best tension: within 6 pts of personal best
+        if 0 < (self.best_score - self.score) <= 6:
+            self.near_best_frames += 1
+        else:
+            self.near_best_frames = 0
+
+        # Last-life pulse counter
+        if self.lives_left == 1:
+            self.last_life_pulse = (self.last_life_pulse + 1) % 60
+        else:
+            self.last_life_pulse = 0
+
         # Rage mode: activated at combo >= 8, disabled on combo break
         was_rage = self.rage_mode
         self.rage_mode = self.combo >= 8
@@ -632,17 +774,20 @@ class GameEngine:
 
         self.spawn_timer += 1
         diff = self.difficulty()
-        spawn_interval = int(max(10, 44 - diff * 6))
+        # Aggressive ramp: 42f at diff=1 → 7f floor at diff=8+
+        spawn_interval = int(max(7, 42 - diff * 5))
 
         if self.spawn_timer > spawn_interval:
             self.spawn_ball()
             self.spawn_timer = 0
 
+        self._check_gestures(hands)
+
+        z_mult = 0.32 if self.slowmo_frames > 0 else 1.0
         for ball in self.balls:
             if getattr(ball, "_near_miss_cd", 0) > 0:
                 ball._near_miss_cd -= 1
-            ball.update()
-            # Update screen-space position from z
+            ball.z += ball.z_speed * z_mult
             sx, sy = self.lane_system.screen_pos(ball.lane, ball.z)
             ball.x, ball.y = sx, sy
             ball.radius = self.lane_system.ball_radius(ball.z)
@@ -684,15 +829,33 @@ class GameEngine:
 
     def _check_near_misses(self, hands):
         for ball in self.balls:
+            if ball.z < 0.45:
+                continue
             for hand in hands:
                 dist = math.hypot(ball.x - hand["x"], ball.y - hand["y"])
                 hit_r = ball.radius + hand["radius"]
                 if dist >= hit_r and dist < DT.NEAR_MISS_DIST_MULT * hit_r:
                     if getattr(ball, "_near_miss_cd", 0) <= 0:
-                        self._spawn_near_miss(
-                            hand["x"], hand["y"], ball.x, ball.y
-                        )
-                        ball._near_miss_cd = 12
+                        self._spawn_near_miss(hand["x"], hand["y"], ball.x, ball.y)
+                        ball._near_miss_cd = 15
+                        btype = getattr(ball, "ball_type", "normal")
+                        if btype == "bomb":
+                            self.floating_texts.append({
+                                "kind": "event", "text": "DODGE!",
+                                "x": float(ball.x), "y": float(ball.y) - 12,
+                                "vx": random.uniform(-0.3, 0.3), "vy": -1.3,
+                                "life": 40, "max_life": 40,
+                                "color": (80, 80, 255), "scale": 0.70,
+                            })
+                        else:
+                            self.score += 1
+                            self.floating_texts.append({
+                                "kind": "score_popup", "text": "NICE",
+                                "x": float(ball.x), "y": float(ball.y) - 10,
+                                "vx": random.uniform(-0.2, 0.2), "vy": -1.1,
+                                "life": 35, "max_life": 35,
+                                "color": DT.C_AMBER, "scale": 0.55,
+                            })
                     break
 
     def check_collisions(self, hands):
